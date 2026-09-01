@@ -232,8 +232,13 @@ INDEX_HTML = """
     
     async function renderLogin() {
         document.getElementById('user-nav').innerHTML = '';
-        let res = await fetch('/api/employees/list');
-        let employees = res.ok ? await res.json() : [];
+        let employees = [];
+        try {
+            let res = await fetch('/api/employees/list');
+            if (res.ok) { employees = await res.json(); }
+        } catch (err) {
+            console.error("Error cargando empleados:", err);
+        }
 
         document.getElementById('app-container').innerHTML = `
             <div class="row justify-content-center mt-5">
@@ -242,7 +247,7 @@ INDEX_HTML = """
                     <div id="login-error" class="alert alert-danger d-none"></div>
                     <form onsubmit="doLogin(event)">
                         <div class="mb-3">
-                            <label class="form-label">Usuario</label>
+                            <label class="form-label">Usuario o Nombre</label>
                             <input type="text" id="emp-search" class="form-control" list="employees-list" placeholder="Ingrese su nombre o usuario..." autocomplete="off" required>
                             <datalist id="employees-list">
                                 <option value="admin">
@@ -250,7 +255,7 @@ INDEX_HTML = """
                             </datalist>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Contraseña</label>
+                            <label class="form-label">Contraseña (Número de Documento)</label>
                             <input type="password" id="password" class="form-control" placeholder="Ingrese su contraseña..." required>
                         </div>
                         <button type="submit" class="btn btn-dark w-100">Ingresar</button>
@@ -263,22 +268,33 @@ INDEX_HTML = """
     async function doLogin(e) {
         e.preventDefault();
         let inputVal = document.getElementById('emp-search').value.trim();
-        let p = document.getElementById('password').value;
+        let p = document.getElementById('password').value.trim();
 
         let username = inputVal;
-        if (inputVal.toLowerCase() !== 'admin' && window.allEmployees) {
-            let found = window.allEmployees.find(emp => emp.name.toLowerCase() === inputVal.toLowerCase());
-            if (found) {
+        if (inputVal.toLowerCase() !== 'admin' && window.allEmployees && window.allEmployees.length > 0) {
+            let found = window.allEmployees.find(emp => 
+                emp.name.toLowerCase() === inputVal.toLowerCase() || 
+                (emp.username && emp.username.toLowerCase() === inputVal.toLowerCase())
+            );
+            if (found && found.username) {
                 username = found.username;
             }
         }
 
         let res = await fetch('/api/login', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
+            method: 'POST', 
+            headers: {'Content-Type': 'application/json'},
             body: JSON.stringify({username: username, password: p})
         });
-        if (res.ok) { loadState(); }
-        else { let err = await res.json(); document.getElementById('login-error').innerText = err.error; document.getElementById('login-error').classList.remove('d-none'); }
+        
+        if (res.ok) { 
+            loadState(); 
+        } else { 
+            let err = await res.json(); 
+            let errorDiv = document.getElementById('login-error');
+            errorDiv.innerText = err.error || 'Error de autenticación'; 
+            errorDiv.classList.remove('d-none'); 
+        }
     }
 
     async function doLogout() {
