@@ -173,10 +173,44 @@ INDEX_HTML = """
                 <div class="row">
                     <div class="col-md-6">
                         <div class="card p-3 shadow-sm mb-4">
-                            <h4>Empleados Registrados</h4>
-                            <ul class="list-group list-group-flush">
-                                ${data.employees.map(e => `<li class="list-group-item d-flex justify-content-between align-items-center">${e.name} <span class="badge bg-primary">${e.area_name || 'Sin área'}</span> <span class="badge bg-secondary">${e.position}</span></li>`).join('')}
-                            </ul>
+                            <h4>Registrar Nuevo Empleado / Usuario</h4>
+                            <div id="emp-error" class="alert alert-danger d-none"></div>
+                            <form onsubmit="createEmployee(event)">
+                                <div class="mb-2">
+                                    <label class="form-label">Nombre Completo</label>
+                                    <input type="text" id="emp-name" class="form-control" required>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label">Documento</label>
+                                    <input type="text" id="emp-doc" class="form-control">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label">Cargo / Puesto</label>
+                                    <input type="text" id="emp-pos" class="form-control">
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label">Área</label>
+                                    <select id="emp-area" class="form-select" required>
+                                        <option value="">Seleccione un área...</option>
+                                        ${data.areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
+                                    </select>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label">Sede</label>
+                                    <select id="emp-site" class="form-select" required>
+                                        ${data.sites.map(s => `<option value="${s.id}">${s.name}</option>`).join('')}
+                                    </select>
+                                </div>
+                                <div class="mb-2">
+                                    <label class="form-label">Usuario (para login)</label>
+                                    <input type="text" id="emp-user" class="form-control" placeholder="Ej: cperez" required>
+                                </div>
+                                <div class="mb-3">
+                                    <label class="form-label">Contraseña</label>
+                                    <input type="password" id="emp-pass" class="form-control" required>
+                                </div>
+                                <button type="submit" class="btn btn-dark w-100">Guardar Empleado y Usuario</button>
+                            </form>
                         </div>
                         <div class="card p-3 shadow-sm mb-4">
                             <h4>Configuración de Horarios de Áreas</h4>
@@ -184,7 +218,7 @@ INDEX_HTML = """
                                 <div class="mb-2">
                                     <label>Área</label>
                                     <select id="area-select" class="form-select" required>
-                                        ${data.areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
+                                        ${data.areas.map(a => `<option value="${a.id}">${a.name} (${a.schedule_name || 'Sin asignar'})</option>`).join('')}
                                     </select>
                                 </div>
                                 <div class="mb-2">
@@ -199,9 +233,19 @@ INDEX_HTML = """
                     </div>
                     <div class="col-md-6">
                         <div class="card p-3 shadow-sm mb-4">
-                            <h4>Sedes</h4>
-                            <ul class="list-group list-group-flush">
-                                ${data.sites.map(s => `<li class="list-group-item d-flex justify-content-between align-items-center">${s.name} <span class="badge bg-dark">${s.radius_m}m radio</span></li>`).join('')}
+                            <h4>Empleados Registrados</h4>
+                            <ul class="list-group list-group-flush" style="max-height: 400px; overflow-y: auto;">
+                                ${data.employees.map(e => `
+                                    <li class="list-group-item d-flex justify-content-between align-items-center">
+                                        <div>
+                                            <strong>${e.name}</strong><br>
+                                            <small class="text-muted">${e.position || 'Sin cargo'} - Doc: ${e.document || 'N/A'}</small>
+                                        </div>
+                                        <div>
+                                            <span class="badge bg-primary">${e.area_name || 'Sin área'}</span>
+                                            <span class="badge bg-secondary">${e.site_name || 'Sin sede'}</span>
+                                        </div>
+                                    </li>`).join('')}
                             </ul>
                         </div>
                         <div class="card p-3 shadow-sm mb-4">
@@ -230,6 +274,32 @@ INDEX_HTML = """
                 document.getElementById('mark-result').innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
             }
         }, err => { alert('Error obteniendo GPS: ' + err.message); });
+    }
+
+    async function createEmployee(e) {
+        e.preventDefault();
+        let payload = {
+            name: document.getElementById('emp-name').value,
+            document: document.getElementById('emp-doc').value,
+            position: document.getElementById('emp-pos').value,
+            area_id: document.getElementById('emp-area').value,
+            site_id: document.getElementById('emp-site').value,
+            username: document.getElementById('emp-user').value,
+            password: document.getElementById('emp-pass').value
+        };
+        let res = await fetch('/api/employee', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        });
+        if (res.ok) {
+            alert('Empleado y usuario creados exitosamente');
+            loadState();
+        } else {
+            let err = await res.json();
+            let errBox = document.getElementById('emp-error');
+            errBox.innerText = err.error;
+            errBox.classList.remove('d-none');
+        }
     }
 
     async function saveAreaSchedule(e) {
@@ -282,6 +352,42 @@ def state():
     attendance = [dict(x) for x in c.execute("""SELECT a.*,e.name employee_name FROM attendance a JOIN employees e ON e.id=a.employee_id WHERE e.company_id=? ORDER BY a.id DESC LIMIT 100""", (cid,))]
     incidents = [dict(x) for x in c.execute("""SELECT i.*,e.name employee_name FROM incidents i JOIN employees e ON e.id=i.employee_id WHERE e.company_id=? ORDER BY i.id DESC""", (cid,))]
     c.close(); return jsonify(companies=companies, sites=sites, schedules=schedules, areas=areas, employees=employees, attendance=attendance, incidents=incidents, user=u)
+
+@app.post("/api/employee")
+def employee():
+    u = current_user()
+    if not u or u["role"] != "administrador": return jsonify(error="No autorizado"), 403
+    d = request.json or {}
+    
+    name = d.get("name", "").strip()
+    username = d.get("username", "").strip().lower()
+    password = d.get("password", "")
+    
+    if not name or not username or not password:
+        return jsonify(error="Nombre, usuario y contraseña son obligatorios"), 400
+        
+    c = db()
+    # Validar si el usuario ya existe
+    exists = c.execute("SELECT id FROM users WHERE lower(username)=?", (username,)).fetchone()
+    if exists:
+        c.close()
+        return jsonify(error="El nombre de usuario ya está en uso"), 400
+        
+    try:
+        cur = c.execute("INSERT INTO employees(company_id,site_id,area_id,name,document,position) VALUES(?,?,?,?,?,?)", 
+                        (u["company_id"], d.get("site_id"), d.get("area_id"), name, d.get("document", ""), d.get("position", "")))
+        eid = cur.lastrowid
+        
+        c.execute("INSERT INTO users(company_id,employee_id,username,password_hash,role) VALUES(?,?,?,?,?)", 
+                  (u["company_id"], eid, username, hashpw(password), "empleado"))
+        c.commit()
+    except Exception as e:
+        c.rollback()
+        c.close()
+        return jsonify(error=f"Error al registrar: {str(e)}"), 400
+        
+    c.close()
+    return jsonify(id=eid, username=username), 201
 
 @app.post("/api/area/schedule")
 def area_schedule():
