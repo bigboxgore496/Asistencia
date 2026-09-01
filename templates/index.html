@@ -107,7 +107,16 @@
                             body: JSON.stringify({ event_type: eventType, latitude: latitude, longitude: longitude })
                         });
                         
-                        const data = await res.json();
+                        const text = await res.text();
+                        let data;
+                        try {
+                            data = JSON.parse(text);
+                        } catch (err) {
+                            console.error("Respuesta no JSON:", text);
+                            alert('El servidor tardó en responder o arrojó un error interno. Intente de nuevo.');
+                            return;
+                        }
+
                         if (res.ok) {
                             alert(`¡Marcación exitosa! (${data.status} a las ${data.time})`);
                             loadState();
@@ -115,7 +124,8 @@
                             alert(data.error || 'Error al registrar asistencia');
                         }
                     } catch (e) {
-                        alert('Error de conexión al registrar.');
+                        console.error("Error de red:", e);
+                        alert('Error de conexión con el servidor. Verifique su internet.');
                     }
                 },
                 (error) => {
