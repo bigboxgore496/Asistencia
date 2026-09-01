@@ -230,10 +230,10 @@ def export_csv():
     for r in rows:
         lat = r["latitude"]
         lon = r["longitude"]
-        # Si hay coordenadas válidas, formateamos como una fórmula de hipervínculo compatible con Excel
         if lat is not None and lon is not None:
             maps_url = f"https://www.google.com/maps?q={lat},{lon}"
-            location_field = f'=HYPERLINK("{maps_url}"; "Ver en Mapa ({lat:.5f}, {lon:.5f})")'
+            # Uso estricto de HIPERVINCULO en español para Excel en español
+            location_field = f'=HIPERVINCULO("{maps_url}"; "Ver en Mapa ({lat:.5f}, {lon:.5f})")'
         else:
             location_field = "Sin GPS"
 
