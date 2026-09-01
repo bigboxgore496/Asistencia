@@ -185,7 +185,6 @@ def mark():
                 late = max(0, actual - start - int(row["tolerance_minutes"] or 0))
                 status = "A tiempo" if late == 0 else f"Retardo {late} min"
         
-        # Etiquetar en el estado si la marcación se hizo fuera del radio permitido
         if not valid:
             status = f"{status} (Fuera de zona a {dist:.0f}m)"
         
@@ -213,9 +212,10 @@ def export_csv():
         return jsonify(error="No autorizado"), 403
     
     c = db()
+    # Se incluyen a.latitude, a.longitude y a.distance_m en la consulta del reporte CSV
     rows = c.execute("""
         SELECT a.id, e.name as employee_name, e.document, s.name as site_name, 
-               a.event_type, a.event_time, a.status, a.late_minutes 
+               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes 
         FROM attendance a 
         JOIN employees e ON e.id = a.employee_id 
         LEFT JOIN sites s ON s.id = e.site_id 
@@ -226,16 +226,22 @@ def export_csv():
     
     si = io.StringIO()
     cw = csv.writer(si)
-    cw.writerow(["ID", "Empleado", "Documento", "Sede", "Evento", "Fecha y Hora", "Estado", "Minutos Retardo"])
+    # Se añaden las columnas correspondientes en las cabeceras del CSV
+    cw.writerow(["ID", "Empleado", "Documento", "Sede", "Evento", "Fecha y Hora", "Latitud", "Longitud", "Distancia (m)", "Estado", "Minutos Retardo"])
     for r in rows:
-        cw.writerow([r["id"], r["employee_name"], r["document"], r["site_name"], r["event_type"], r["event_time"], r["status"], r["late_minutes"]])
+        cw.writerow([
+            r["id"], r["employee_name"], r["document"], r["site_name"], 
+            r["event_type"], r["event_time"], r["latitude"], r["longitude"], 
+            f"{r['distance_m']:.1f}" if r["distance_m"] is not None else "", 
+            r["status"], r["late_minutes"]
+        ])
     
     output = make_response(si.getvalue())
     output.headers["Content-Disposition"] = "attachment; filename=reporte_asistencia.csv"
-    output.headers["Content-type"]  = "text/csv; charset=utf-8"
+    output.headers["Content-type"] = "text/csv; charset=utf-8"
     return output
 
 init_db()
 
 if __name__ == "__main__": 
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    app.run(host="0.0.0.0", port=5000, debug=True)    
