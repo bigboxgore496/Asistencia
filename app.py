@@ -275,7 +275,7 @@ INDEX_HTML = """
                     <div id="login-error" class="alert alert-danger d-none"></div>
                     <form onsubmit="doLogin(event)">
                         <div class="mb-3">
-                            <label class="form-label">Nombre de Usuario</label>
+                            <label class="form-label">Nombre de Usuario o Empleado</label>
                             <input type="text" id="emp-search" class="form-control" list="employees-list" placeholder="Seleccione o escriba su nombre..." autocomplete="off" required>
                             <datalist id="employees-list">
                                 <option value="admin">
@@ -295,22 +295,37 @@ INDEX_HTML = """
 
     async function doLogin(e) {
         e.preventDefault();
-        let inputVal = document.getElementById('emp-search').value.trim();
-        let p = document.getElementById('password').value.trim();
-
-        let res = await fetch('/api/login', {
-            method: 'POST', 
-            headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({username: inputVal, password: p})
-        });
+        let searchEl = document.getElementById('emp-search');
+        let passEl = document.getElementById('password');
+        let errorDiv = document.getElementById('login-error');
         
-        if (res.ok) { 
-            loadState(); 
-        } else { 
-            let err = await res.json(); 
-            let errorDiv = document.getElementById('login-error');
-            errorDiv.innerText = err.error || 'Error de autenticación'; 
-            errorDiv.classList.remove('d-none'); 
+        if (!searchEl || !passEl) return;
+
+        let inputVal = searchEl.value.trim();
+        let p = passEl.value.trim();
+
+        try {
+            let res = await fetch('/api/login', {
+                method: 'POST', 
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({username: inputVal, password: p})
+            });
+            
+            let data = await res.json();
+
+            if (res.ok) { 
+                loadState(); 
+            } else { 
+                if (errorDiv) {
+                    errorDiv.innerText = data.error || 'Error de autenticación'; 
+                    errorDiv.classList.remove('d-none'); 
+                } else {
+                    alert(data.error || 'Error de autenticación');
+                }
+            }
+        } catch (err) {
+            console.error("Error en login:", err);
+            alert("Ocurrió un error al conectar con el servidor.");
         }
     }
 
