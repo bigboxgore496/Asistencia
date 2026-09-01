@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify, render_template, session, make_response
+from flask import Flask, request, jsonify, render_template_string, session, make_response
 import sqlite3, math, hashlib, secrets, csv, io, gspread
 from pathlib import Path
 from datetime import datetime
@@ -19,27 +19,42 @@ def init_db():
     CREATE TABLE IF NOT EXISTS companies(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,active INTEGER DEFAULT 1);
     CREATE TABLE IF NOT EXISTS sites(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,name TEXT NOT NULL,latitude REAL NOT NULL,longitude REAL NOT NULL,radius_m INTEGER DEFAULT 100,FOREIGN KEY(company_id) REFERENCES companies(id));
     CREATE TABLE IF NOT EXISTS schedules(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,name TEXT NOT NULL,mon TEXT DEFAULT '',tue TEXT DEFAULT '',wed TEXT DEFAULT '',thu TEXT DEFAULT '',fri TEXT DEFAULT '',sat TEXT DEFAULT '',sun TEXT DEFAULT '',lunch_start TEXT DEFAULT '',lunch_end TEXT DEFAULT '',break_minutes INTEGER DEFAULT 30,tolerance_minutes INTEGER DEFAULT 10,FOREIGN KEY(company_id) REFERENCES companies(id));
-    CREATE TABLE IF NOT EXISTS employees(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,site_id INTEGER,schedule_id INTEGER,name TEXT NOT NULL,document TEXT,position TEXT,status TEXT DEFAULT 'Activo',FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(site_id) REFERENCES sites(id),FOREIGN KEY(schedule_id) REFERENCES schedules(id));
+    CREATE TABLE IF NOT EXISTS areas(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,name TEXT NOT NULL,schedule_id INTEGER,FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(schedule_id) REFERENCES schedules(id));
+    CREATE TABLE IF NOT EXISTS employees(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,site_id INTEGER,schedule_id INTEGER,area_id INTEGER,name TEXT NOT NULL,document TEXT,position TEXT,status TEXT DEFAULT 'Activo',FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(site_id) REFERENCES sites(id),FOREIGN KEY(schedule_id) REFERENCES schedules(id),FOREIGN KEY(area_id) REFERENCES areas(id));
     CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER,employee_id INTEGER,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,active INTEGER DEFAULT 1,FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(employee_id) REFERENCES employees(id));
     CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,event_type TEXT NOT NULL,event_time TEXT NOT NULL,latitude REAL,longitude REAL,distance_m REAL,gps_valid INTEGER DEFAULT 0,status TEXT,late_minutes INTEGER DEFAULT 0,worked_minutes INTEGER DEFAULT 0,overtime_minutes INTEGER DEFAULT 0,FOREIGN KEY(employee_id) REFERENCES employees(id));
     CREATE TABLE IF NOT EXISTS incidents(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,type TEXT NOT NULL,start_date TEXT,end_date TEXT,notes TEXT,status TEXT DEFAULT 'Pendiente',FOREIGN KEY(employee_id) REFERENCES employees(id));
     """)
     if c.execute("SELECT COUNT(*) FROM companies").fetchone()[0] == 0:
-        cur = c.execute("INSERT INTO companies(name) VALUES(?)", ("Empresa Demo S.A.S.",))
+        cur = c.execute("INSERT INTO companies(name) VALUES(?)", ("Omma Group",))
         co = cur.lastrowid
         
         cur = c.execute("INSERT INTO sites(company_id,name,latitude,longitude,radius_m) VALUES(?,?,?,?,?)", (co, "Sede Principal", 6.214110727151654, -75.58268995990919, 200))
         site = cur.lastrowid
         
+        # Horario normal Lunes a Sábado de 7:00 am a 3:00 pm (07:00-15:00)
         cur = c.execute("""INSERT INTO schedules(company_id,name,mon,tue,wed,thu,fri,sat,sun,lunch_start,lunch_end,break_minutes,tolerance_minutes)
-                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (co, "Administrativo", "07:00-17:00", "07:00-17:00", "07:00-17:00", "07:00-17:00", "07:00-13:00", "", "", "13:00", "14:00", 30, 10))
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (co, "Horario Normal (7am - 3pm)", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "", "12:00", "13:00", 60, 10))
         sch = cur.lastrowid
         
-        demo = [("Carlos Rodríguez", "1.234.567.890", "Auxiliar Administrativo"), ("María González", "1.098.765.432", "Contadora"), ("Juan Pérez", "1.112.223.334", "Operario")]
-        for n, d, p in demo:
-            cur = c.execute("INSERT INTO employees(company_id,site_id,schedule_id,name,document,position) VALUES(?,?,?,?,?,?)", (co, site, sch, n, d, p))
+        # Áreas requeridas
+        areas_demo = ["Producción", "Comercial", "Administración", "I+D"]
+        area_ids = {}
+        for aname in areas_demo:
+            cur = c.execute("INSERT INTO areas(company_id,name,schedule_id) VALUES(?,?,?)", (co, aname, sch))
+            area_ids[aname] = cur.lastrowid
+        
+        demo = [
+            ("Carlos Rodríguez", "1.234.567.890", "Auxiliar Administrativo", "Administración"), 
+            ("María González", "1.098.765.432", "Contadora", "Administración"), 
+            ("Juan Pérez", "1.112.223.334", "Operario", "Producción")
+        ]
+        for n, d, p, area_name in demo:
+            aid = area_ids.get(area_name)
+            cur = c.execute("INSERT INTO employees(company_id,site_id,schedule_id,area_id,name,document,position) VALUES(?,?,?,?,?,?,?)", (co, site, sch, aid, n, d, p))
             eid = cur.lastrowid
             c.execute("INSERT INTO users(company_id,employee_id,username,password_hash,role) VALUES(?,?,?,?,?)", (co, eid, n.split()[0].lower(), hashpw("123456"), "empleado"))
+        
         c.execute("INSERT INTO users(company_id,username,password_hash,role) VALUES(?,?,?,?)", (co, "admin", hashpw("admin123"), "administrador"))
     c.commit(); c.close()
 
@@ -47,6 +62,10 @@ def current_user():
     uid = session.get("uid")
     if not uid: return None
     c = db(); u = c.execute("SELECT * FROM users WHERE id=? AND active=1", (uid,)).fetchone(); c.close()
+    if u and u["role"] == "administrador":
+        u_dict = dict(u)
+        u_dict["display_name"] = "Admin (Administrador)"
+        return u_dict
     return dict(u) if u else None
 
 def hav(lat1, lon1, lat2, lon2):
@@ -63,8 +82,176 @@ def sync_to_sheets(employee_name, document, event_type, event_time, status, late
     except Exception as e:
         print(f"Error al sincronizar con Google Sheets: {e}")
 
+INDEX_HTML = """
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asistencia Omma</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-dark bg-dark px-4 mb-4">
+        <span class="navbar-brand mb-0 h1">ASISTENCIA OMMA</span>
+        <div id="user-nav" class="text-white"></div>
+    </nav>
+    <div class="container" id="app-container">
+        <!-- Contenido dinámico -->
+    </div>
+    <script>
+    async function loadState() {
+        let res = await fetch('/api/state');
+        if (!res.ok) { renderLogin(); return; }
+        let data = await res.json();
+        renderDashboard(data);
+    }
+    
+    function renderLogin() {
+        document.getElementById('user-nav').innerHTML = '';
+        document.getElementById('app-container').innerHTML = `
+            <div class="row justify-content-center mt-5">
+                <div class="col-md-4 card p-4 shadow">
+                    <h3 class="mb-3 text-center">Iniciar Sesión</h3>
+                    <div id="login-error" class="alert alert-danger d-none"></div>
+                    <form onsubmit="doLogin(event)">
+                        <div class="mb-3">
+                            <label class="form-label">Usuario</label>
+                            <input type="text" id="username" class="form-control" required>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Contraseña</label>
+                            <input type="password" id="password" class="form-control" required>
+                        </div>
+                        <button type="submit" class="btn btn-dark w-100">Ingresar</button>
+                    </form>
+                </div>
+            </div>`;
+    }
+
+    async function doLogin(e) {
+        e.preventDefault();
+        let u = document.getElementById('username').value;
+        let p = document.getElementById('password').value;
+        let res = await fetch('/api/login', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({username: u, password: p})
+        });
+        if (res.ok) { loadState(); }
+        else { let err = await res.json(); document.getElementById('login-error').innerText = err.error; document.getElementById('login-error').classList.remove('d-none'); }
+    }
+
+    async function doLogout() {
+        await fetch('/api/logout', {method: 'POST'});
+        loadState();
+    }
+
+    function renderDashboard(data) {
+        let role = data.user.role;
+        let displayName = role === 'administrador' ? 'Admin (Administrador)' : data.user.username;
+        document.getElementById('user-nav').innerHTML = `<span>${displayName}</span> <button class="btn btn-outline-light btn-sm ms-3" onclick="doLogout()">Cerrar sesión</button>`;
+        
+        let html = `
+            <div class="card p-4 shadow-sm mb-4">
+                <h2>Panel de Control - Omma Group</h2>
+                <p class="text-muted">Sistema de control de asistencia con validación GPS y áreas.</p>
+            </div>`;
+
+        if (role === 'empleado') {
+            html += `
+                <div class="card p-4 shadow-sm text-center">
+                    <h3>Registrar Asistencia</h3>
+                    <p class="text-muted">Marque su entrada o salida usando GPS (Radio 200m).</p>
+                    <div class="my-3">
+                        <button class="btn btn-success btn-lg mx-2" onclick="markAttendance('Entrada')">Marcar Entrada</button>
+                        <button class="btn btn-danger btn-lg mx-2" onclick="markAttendance('Salida')">Marcar Salida</button>
+                    </div>
+                    <div id="mark-result" class="mt-3"></div>
+                </div>`;
+        } else {
+            html += `
+                <div class="row">
+                    <div class="col-md-6">
+                        <div class="card p-3 shadow-sm mb-4">
+                            <h4>Empleados Registrados</h4>
+                            <ul class="list-group list-group-flush">
+                                ${data.employees.map(e => `<li class="list-group-item d-flex justify-content-between align-items-center">${e.name} <span class="badge bg-primary">${e.area_name || 'Sin área'}</span> <span class="badge bg-secondary">${e.position}</span></li>`).join('')}
+                            </ul>
+                        </div>
+                        <div class="card p-3 shadow-sm mb-4">
+                            <h4>Configuración de Horarios de Áreas</h4>
+                            <form onsubmit="saveAreaSchedule(event)" class="mb-3">
+                                <div class="mb-2">
+                                    <label>Área</label>
+                                    <select id="area-select" class="form-select" required>
+                                        ${data.areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
+                                    </select>
+                                </div>
+                                <div class="mb-2">
+                                    <label>Horario (Lunes a Sábado)</label>
+                                    <select id="schedule-select" class="form-select" required>
+                                        ${data.schedules.map(s => `<option value="${s.id}">${s.name} (${s.mon || 'Sin horario'})</option>`).join('')}
+                                    </select>
+                                </div>
+                                <button type="submit" class="btn btn-primary btn-sm">Asignar Horario a Área</button>
+                            </form>
+                        </div>
+                    </div>
+                    <div class="col-md-6">
+                        <div class="card p-3 shadow-sm mb-4">
+                            <h4>Sedes</h4>
+                            <ul class="list-group list-group-flush">
+                                ${data.sites.map(s => `<li class="list-group-item d-flex justify-content-between align-items-center">${s.name} <span class="badge bg-dark">${s.radius_m}m radio</span></li>`).join('')}
+                            </ul>
+                        </div>
+                        <div class="card p-3 shadow-sm mb-4">
+                            <h4>Reportes del Sistema</h4>
+                            <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia (Excel / CSV)</a>
+                        </div>
+                    </div>
+                </div>`;
+        }
+        document.getElementById('app-container').innerHTML = html;
+    }
+
+    async function markAttendance(type) {
+        if (!navigator.geolocation) { alert('Geolocalización no soportada'); return; }
+        navigator.geolocation.getCurrentPosition(async pos => {
+            let lat = pos.coords.latitude;
+            let lon = pos.coords.longitude;
+            let res = await fetch('/api/mark', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({event_type: type, latitude: lat, longitude: lon})
+            });
+            let data = await res.json();
+            if (res.ok) {
+                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">${type} registrada a las ${data.time} - Estado: ${data.status}</div>`;
+            } else {
+                document.getElementById('mark-result').innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+            }
+        }, err => { alert('Error obteniendo GPS: ' + err.message); });
+    }
+
+    async function saveAreaSchedule(e) {
+        e.preventDefault();
+        let areaId = document.getElementById('area-select').value;
+        let scheduleId = document.getElementById('schedule-select').value;
+        let res = await fetch('/api/area/schedule', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({area_id: areaId, schedule_id: scheduleId})
+        });
+        if (res.ok) { alert('Horario actualizado con éxito'); loadState(); }
+        else { alert('Error al actualizar'); }
+    }
+
+    loadState();
+    </script>
+</body>
+</html>
+"""
+
 @app.route("/")
-def index(): return render_template("index.html", user=current_user())
+def index(): return render_template_string(INDEX_HTML)
 
 @app.post("/api/login")
 def login():
@@ -90,53 +277,21 @@ def state():
     companies = [dict(x) for x in c.execute("SELECT * FROM companies WHERE id=?", (cid,))]
     sites = [dict(x) for x in c.execute("SELECT * FROM sites WHERE company_id=?", (cid,))]
     schedules = [dict(x) for x in c.execute("SELECT * FROM schedules WHERE company_id=?", (cid,))]
-    employees = [dict(x) for x in c.execute("""SELECT e.*,s.name site_name,h.name schedule_name FROM employees e LEFT JOIN sites s ON s.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id WHERE e.company_id=? ORDER BY e.id""", (cid,))]
+    areas = [dict(x) for x in c.execute("""SELECT a.*, s.name schedule_name FROM areas a LEFT JOIN schedules s ON s.id=a.schedule_id WHERE a.company_id=?""", (cid,))]
+    employees = [dict(x) for x in c.execute("""SELECT e.*,s.name site_name,h.name schedule_name, ar.name area_name FROM employees e LEFT JOIN sites s ON s.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id LEFT JOIN areas ar ON ar.id=e.area_id WHERE e.company_id=? ORDER BY e.id""", (cid,))]
     attendance = [dict(x) for x in c.execute("""SELECT a.*,e.name employee_name FROM attendance a JOIN employees e ON e.id=a.employee_id WHERE e.company_id=? ORDER BY a.id DESC LIMIT 100""", (cid,))]
     incidents = [dict(x) for x in c.execute("""SELECT i.*,e.name employee_name FROM incidents i JOIN employees e ON e.id=i.employee_id WHERE e.company_id=? ORDER BY i.id DESC""", (cid,))]
-    c.close(); return jsonify(companies=companies, sites=sites, schedules=schedules, employees=employees, attendance=attendance, incidents=incidents, user=u)
+    c.close(); return jsonify(companies=companies, sites=sites, schedules=schedules, areas=areas, employees=employees, attendance=attendance, incidents=incidents, user=u)
 
-@app.post("/api/company")
-def company():
-    u = current_user()
-    if not u or u["role"] != "administrador": return jsonify(error="No autorizado"), 403
-    name = (request.json or {}).get("name", "").strip()
-    if not name: return jsonify(error="Nombre requerido"), 400
-    c = db(); cur = c.execute("INSERT INTO companies(name) VALUES(?)", (name,)); c.commit(); c.close(); return jsonify(id=cur.lastrowid), 201
-
-@app.post("/api/site")
-def site():
+@app.post("/api/area/schedule")
+def area_schedule():
     u = current_user()
     if not u or u["role"] != "administrador": return jsonify(error="No autorizado"), 403
     d = request.json or {}
-    try: vals = (u["company_id"], d["name"], float(d["latitude"]), float(d["longitude"]), int(d.get("radius_m", 100)))
-    except: return jsonify(error="Datos inválidos"), 400
-    c = db(); cur = c.execute("INSERT INTO sites(company_id,name,latitude,longitude,radius_m) VALUES(?,?,?,?,?)", vals); c.commit(); c.close(); return jsonify(id=cur.lastrowid), 201
-
-@app.post("/api/schedule")
-def schedule():
-    u = current_user()
-    if not u or u["role"] != "administrador": return jsonify(error="No autorizado"), 403
-    d = request.json or {}
-    vals = (u["company_id"], d["name"], d.get("mon", ""), d.get("tue", ""), d.get("wed", ""), d.get("thu", ""), d.get("fri", ""), d.get("sat", ""), d.get("sun", ""), d.get("lunch_start", ""), d.get("lunch_end", ""), int(d.get("break_minutes", 30)), int(d.get("tolerance_minutes", 10)))
-    c = db(); cur = c.execute("""INSERT INTO schedules(company_id,name,mon,tue,wed,thu,fri,sat,sun,lunch_start,lunch_end,break_minutes,tolerance_minutes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", vals); c.commit(); c.close(); return jsonify(id=cur.lastrowid), 201
-
-@app.post("/api/employee")
-def employee():
-    u = current_user()
-    if not u or u["role"] != "administrador": return jsonify(error="No autorizado"), 403
-    d = request.json or {}
-    c = db(); cur = c.execute("INSERT INTO employees(company_id,site_id,schedule_id,name,document,position) VALUES(?,?,?,?,?,?)", (u["company_id"], d.get("site_id"), d.get("schedule_id"), d["name"], d.get("document", ""), d.get("position", ""))); eid = cur.lastrowid
-    username = (d.get("username") or d["name"].split()[0]).lower()
-    c.execute("INSERT INTO users(company_id,employee_id,username,password_hash,role) VALUES(?,?,?,?,?)", (u["company_id"], eid, username, hashpw(d.get("password", "123456")), "empleado"))
-    c.commit(); c.close(); return jsonify(id=eid, username=username), 201
-
-@app.post("/api/incident")
-def incident():
-    u = current_user()
-    if not u or u["role"] not in ("administrador", "supervisor"): return jsonify(error="No autorizado"), 403
-    d = request.json or {}; c = db()
-    c.execute("INSERT INTO incidents(employee_id,type,start_date,end_date,notes) VALUES(?,?,?,?,?)", (d["employee_id"], d["type"], d.get("start_date"), d.get("end_date"), d.get("notes", ""))); c.commit(); c.close()
-    return jsonify(ok=True), 201
+    c = db()
+    c.execute("UPDATE areas SET schedule_id=? WHERE id=? AND company_id=?", (d.get("schedule_id"), d.get("area_id"), u["company_id"]))
+    c.commit(); c.close()
+    return jsonify(ok=True)
 
 @app.post("/api/mark")
 def mark():
@@ -154,8 +309,18 @@ def mark():
             return jsonify(error="Tipo inválido"), 400
         
         c = db()
-        row = c.execute("""SELECT e.*,si.latitude site_lat,si.longitude site_lon,si.radius_m,h.* FROM employees e
-          LEFT JOIN sites si ON si.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id WHERE e.id=? AND e.company_id=?""", (u["employee_id"], u["company_id"])).fetchone()
+        row = c.execute("""SELECT e.*, si.latitude site_lat, si.longitude site_lon, si.radius_m, 
+                             COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
+                             COALESCE(ar_sch.wed, h.wed) wed, COALESCE(ar_sch.thu, h.thu) thu, 
+                             COALESCE(ar_sch.fri, h.fri) fri, COALESCE(ar_sch.sat, h.sat) sat, 
+                             COALESCE(ar_sch.sun, h.sun) sun,
+                             COALESCE(ar_sch.tolerance_minutes, h.tolerance_minutes) tolerance_minutes
+                           FROM employees e
+                           LEFT JOIN sites si ON si.id=e.site_id 
+                           LEFT JOIN schedules h ON h.id=e.schedule_id 
+                           LEFT JOIN areas ar ON ar.id=e.area_id
+                           LEFT JOIN schedules ar_sch ON ar_sch.id=ar.schedule_id
+                           WHERE e.id=? AND e.company_id=?""", (u["employee_id"], u["company_id"])).fetchone()
         c.close()
         
         if not row: 
@@ -213,11 +378,12 @@ def export_csv():
     
     c = db()
     rows = c.execute("""
-        SELECT a.id, e.name as employee_name, e.document, s.name as site_name, 
+        SELECT a.id, e.name as employee_name, e.document, s.name as site_name, ar.name as area_name,
                a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes 
         FROM attendance a 
         JOIN employees e ON e.id = a.employee_id 
         LEFT JOIN sites s ON s.id = e.site_id 
+        LEFT JOIN areas ar ON ar.id = e.area_id
         WHERE e.company_id = ? 
         ORDER BY a.id DESC
     """, (u["company_id"],)).fetchall()
@@ -225,20 +391,19 @@ def export_csv():
     
     si = io.StringIO()
     cw = csv.writer(si)
-    cw.writerow(["ID", "Empleado", "Documento", "Sede", "Evento", "Fecha y Hora", "Ubicación Google Maps", "Distancia (m)", "Estado", "Minutos Retardo"])
+    cw.writerow(["ID", "Empleado", "Documento", "Área", "Sede", "Evento", "Fecha y Hora", "Ubicación Google Maps", "Distancia (m)", "Estado", "Minutos Retardo"])
     
     for r in rows:
         lat = r["latitude"]
         lon = r["longitude"]
         if lat is not None and lon is not None:
             maps_url = f"https://www.google.com/maps?q={lat},{lon}"
-            # Uso estricto de HIPERVINCULO en español para Excel en español
             location_field = f'=HIPERVINCULO("{maps_url}"; "Ver en Mapa ({lat:.5f}, {lon:.5f})")'
         else:
             location_field = "Sin GPS"
 
         cw.writerow([
-            r["id"], r["employee_name"], r["document"], r["site_name"], 
+            r["id"], r["employee_name"], r["document"], r["area_name"] or "", r["site_name"], 
             r["event_type"], r["event_time"], location_field, 
             f"{r['distance_m']:.1f}" if r["distance_m"] is not None else "", 
             r["status"], r["late_minutes"]
