@@ -363,7 +363,7 @@ INDEX_HTML = """
             html += `
                 <div class="card p-3 shadow-sm mb-4">
                     <h4>Reportes del Sistema</h4>
-                    <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia Consolidado (Excel con Código de Proyecto)</a>
+                    <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia (Excel con Registros Independientes)</a>
                 </div>
                 
                 <div class="card p-3 shadow-sm mb-4">
@@ -412,7 +412,7 @@ INDEX_HTML = """
 
         filtered.sort((a, b) => {
             if (sortOrder === 'az') return a.name.localeCompare(b.name);
-            if (sortOrder === 'za') return b.name.localeCompare(accessKey(a.name)); // corrected compare
+            if (sortOrder === 'za') return b.name.localeCompare(a.name);
             return 0;
         });
 
@@ -452,7 +452,6 @@ INDEX_HTML = """
             }
         }
 
-        // Se obtiene la geolocalización obligatoria en ambos momentos (Entrada y Salida)
         navigator.geolocation.getCurrentPosition(async pos => {
             let lat = pos.coords.latitude;
             let lon = pos.coords.longitude;
@@ -789,94 +788,6 @@ def export_csv():
   ).fetchall()
   c.close()
 
-  daily_records = {}
-  days_list = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-
-  for r in rows:
-    dt_str = r["event_time"]
-    try:
-      dt_obj = datetime.fromisoformat(dt_str)
-    except Exception:
-      try:
-        dt_obj = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
-      except Exception:
-        continue
-
-    day_date = dt_obj.strftime("%Y-%m-%d")
-    emp_key = (r["emp_id"], day_date)
-
-    if emp_key not in daily_records:
-      daily_records[emp_key] = {
-          "id": r["id"],
-          "employee_name": r["employee_name"],
-          "document": r["document"],
-          "area_name": r["area_name"] or "",
-          "site_name": r["site_name"] or "",
-          "date": dt_obj.strftime("%d-%b").lower(),
-          "entrada_time": "",
-          "salida_time": "",
-          "lat": None,
-          "lon": None,
-          "distance_m": None,
-          "late_minutes": 0,
-          "total_extras": 0,
-          "project_code": "",
-      }
-
-    rec = daily_records[emp_key]
-    time_formatted = dt_obj.strftime("%I:%M:%S %p").lower()
-
-    weekday_idx = dt_obj.weekday()
-    day_key = days_list[weekday_idx]
-    period = r[day_key] if day_key in r.keys() else ""
-
-    if r["event_type"] == "Entrada":
-      rec["entrada_time"] = time_formatted
-      if r["latitude"] is not None:
-        rec["lat"] = r["latitude"]
-        rec["lon"] = r["longitude"]
-        rec["distance_m"] = r["distance_m"]
-
-      if period and "-" in period:
-        try:
-          start_str = period.split("-")[0]
-          sched_hour = int(start_str[:2])
-          sched_min = int(start_str[3:5])
-          sched_total = sched_hour * 60 + sched_min
-          actual_total = dt_obj.hour * 60 + dt_obj.minute
-          tolerance = int(r["tolerance_minutes"] or 10)
-          calc_late = max(0, actual_total - sched_total - tolerance)
-          rec["late_minutes"] = max(r["late_minutes"] or 0, calc_late)
-        except Exception:
-          rec["late_minutes"] = r["late_minutes"] or 0
-      else:
-        rec["late_minutes"] = r["late_minutes"] or 0
-
-    elif r["event_type"] == "Salida":
-      rec["salida_time"] = time_formatted
-      if r["project_code"]:
-        rec["project_code"] = r["project_code"]
-      # Para la salida también se almacena/registra su propia ubicación o si no hay de entrada, se toma la de salida
-      if r["latitude"] is not None and rec["lat"] is None:
-        rec["lat"] = r["latitude"]
-        rec["lon"] = r["longitude"]
-        rec["distance_m"] = r["distance_m"]
-
-      if period and "-" in period:
-        try:
-          end_str = period.split("-")[1]
-          end_hour = int(end_str[:2])
-          end_min = int(end_str[3:5])
-          sched_end_total = end_hour * 60 + end_min
-          actual_end_total = dt_obj.hour * 60 + dt_obj.minute
-          diff = actual_end_total - sched_end_total
-          calc_extras = max(0, diff)
-          rec["total_extras"] = max(r["overtime_minutes"] or 0, calc_extras)
-        except Exception:
-          rec["total_extras"] = r["overtime_minutes"] or 0
-      else:
-        rec["total_extras"] = r["overtime_minutes"] or 0
-
   wb = openpyxl.Workbook()
   ws = wb.active
   ws.title = "Reporte Asistencia"
@@ -888,19 +799,32 @@ def export_csv():
       "Area",
       "Sede",
       "Fecha",
-      "Hora de ingreso",
-      "Hora de Salida",
+      "Tipo Registro",
+      "Hora",
       "Codigo de Proyecto",
       "Ubicacion Google Maps",
       "Distancia (m)",
       "Minutos Retardo",
       "Total Extras",
+      "Estado",
   ]
   ws.append(headers)
 
-  for key, r in daily_records.items():
-    lat = r["lat"]
-    lon = r["lon"]
+  for r in rows:
+    dt_str = r["event_time"]
+    try:
+      dt_obj = datetime.fromisoformat(dt_str)
+    except Exception:
+      try:
+        dt_obj = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+      except Exception:
+        continue
+
+    date_str = dt_obj.strftime("%d-%b").lower()
+    time_str = dt_obj.strftime("%I:%M:%S %p").lower()
+
+    lat = r["latitude"]
+    lon = r["longitude"]
     location_field = ""
     if lat is not None and lon is not None:
       try:
@@ -909,20 +833,27 @@ def export_csv():
       except Exception:
         pass
 
+    distance_val = (
+        int(round(r["distance_m"])) if r["distance_m"] is not None else ""
+    )
+    late_val = int(r["late_minutes"] or 0)
+    overtime_val = int(r["overtime_minutes"] or 0)
+
     row_data = [
-        r["id"],
+        int(r["id"]),
         r["employee_name"],
-        r["document"],
-        r["area_name"],
-        r["site_name"],
-        r["date"],
-        r["entrada_time"],
-        r["salida_time"],
-        r["project_code"],
+        str(r["document"] or ""),
+        r["area_name"] or "",
+        r["site_name"] or "",
+        date_str,
+        r["event_type"],
+        time_str,
+        r["project_code"] or "",
         location_field,
-        f"{r['distance_m']:.0f}" if r["distance_m"] is not None else "",
-        r["late_minutes"],
-        r["total_extras"],
+        distance_val,
+        late_val,
+        overtime_val,
+        r["status"] or "",
     ]
     ws.append(row_data)
 
