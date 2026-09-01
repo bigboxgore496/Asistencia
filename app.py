@@ -25,6 +25,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,event_type TEXT NOT NULL,event_time TEXT NOT NULL,latitude REAL,longitude REAL,distance_m REAL,gps_valid INTEGER DEFAULT 0,status TEXT,late_minutes INTEGER DEFAULT 0,worked_minutes INTEGER DEFAULT 0,overtime_minutes INTEGER DEFAULT 0,FOREIGN KEY(employee_id) REFERENCES employees(id));
     CREATE TABLE IF NOT EXISTS incidents(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,type TEXT NOT NULL,start_date TEXT,end_date TEXT,notes TEXT,status TEXT DEFAULT 'Pendiente',FOREIGN KEY(employee_id) REFERENCES employees(id));
     """)
+    
     if c.execute("SELECT COUNT(*) FROM companies").fetchone()[0] == 0:
         cur = c.execute("INSERT INTO companies(name) VALUES(?)", ("Omma Group",))
         co = cur.lastrowid
@@ -37,25 +38,68 @@ def init_db():
                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (co, "Horario Normal (7am - 3pm)", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "", "12:00", "13:00", 60, 10))
         sch = cur.lastrowid
         
-        # Áreas requeridas
-        areas_demo = ["Producción", "Comercial", "Administración", "I+D"]
+        # Crear todas las áreas únicas de la imagen
+        area_names_list = ["Administración", "Comercial", "i+D", "Jefes", "Logistica", "Produccion", "Servicios"]
         area_ids = {}
-        for aname in areas_demo:
+        for aname in area_names_list:
             cur = c.execute("INSERT INTO areas(company_id,name,schedule_id) VALUES(?,?,?)", (co, aname, sch))
             area_ids[aname] = cur.lastrowid
-        
-        demo = [
-            ("Carlos Rodríguez", "1.234.567.890", "Auxiliar Administrativo", "Administración"), 
-            ("María González", "1.098.765.432", "Contadora", "Administración"), 
-            ("Juan Pérez", "1.112.223.334", "Operario", "Producción")
+
+        # Inserción de todo el personal provisto en la imagen
+        personal_data = [
+            ("1020423063", "ADRIANA MARÍA GARCÍA ATENCIA", "Administración"),
+            ("43928418", "CINDY YULIANA MEJIA SALAZAR", "Administración"),
+            ("15518961", "LUIS FERNANDO SIERRA HERNANDEZ", "Administración"),
+            ("1035435578", "DANIELA ARENAS QUICENO", "Comercial"),
+            ("1020395866", "ELKIN DARIO JARAMILLO ORTIZ", "Comercial"),
+            ("1090516190", "FABRICIO ENRIQUE GÓMEZ PINTO", "Comercial"),
+            ("1017209920", "JOVER OVIER GONZALEZ VELASQUEZ", "Comercial"),
+            ("1000895890", "JUAN MANUEL ALCALA RINCON", "Comercial"),
+            ("1040751627", "DANIEL ESPINAL MONTOYA", "i+D"),
+            ("1020470477", "EDWIN FERNEY GALEANO MONSALVE", "i+D"),
+            ("1039458074", "JUAN SEBASTIAN FRANCO ARCILA", "i+D"),
+            ("1001478187", "JUANITA CASTAÑO LOPEZ", "i+D"),
+            ("98585959", "GUSTAVO ADOLFO DELGADO OCHOA", "Jefes"),
+            ("1037596166", "JUAN JULIO GOMEZ ESTRADA", "Jefes"),
+            ("1152691941", "SEBASTIAN QUIROZ FRANCO", "Jefes"),
+            ("8027635", "CARLOS ALBERTO TORRES MUÑOZ", "Logistica"),
+            ("1026140232", "WILLMAR ANDRES VARGAS RAIGOZA", "Logistica"),
+            ("79829313", "WILMER ANDRES URIBE PACHECO", "Logistica"),
+            ("1035861508", "ANTONY WEPES HOYOS", "Produccion"),
+            ("1017147274", "CRISTIAN ALEXIS RIVERA MUÑOZ", "Produccion"),
+            ("1017150704", "DANIEL STIVENS JIMENEZ ZULUAGA", "Produccion"),
+            ("1000641073", "DIEGO ALEJANDRO CARRILLO POSADA", "Produccion"),
+            ("1035856168", "DORLEY ALBEIRO MONTOYA HOYOS", "Produccion"),
+            ("8129719", "EDWIN SERNA BEDOYA", "Produccion"),
+            ("1059699272", "FRANK ESTEBAN PUERTA", "Produccion"),
+            ("1035878759", "GERMAN DAVID JIMENEZ ZULETA", "Produccion"),
+            ("1082491653", "JAVIER CAMILO JIMENEZ", "Produccion"),
+            ("71662540", "JOSE ANTONY RESTREPO RUA", "Produccion"),
+            ("1085225887", "JOSE LEONARDO DE ARMAS", "Produccion"),
+            ("71798123", "MAURICIO JAVIER CUELLO AGUAS", "Produccion"),
+            ("1036609208", "QUENYA VANESA LOPEZ VALENCIA", "Produccion"),
+            ("1025886942", "SANTIAGO HERNANDEZ", "Produccion"),
+            ("1017176777", "VIRGILIO HOYOS MENESES", "Produccion"),
+            ("1131619137", "LUIS CARLOS RUIZ RÍOS", "Produccion"),
+            ("4896718", "OSCAR GABRIEL CARRERA", "Produccion"),
+            ("1037946106", "CARLOS HERNAN NARANJO DAZA", "Servicios"),
+            ("71314530", "DIEGO ANDRES FLOREZ RAMÍREZ", "Servicios"),
+            ("1040748354", "ESTIVEN VALENCIA BEDOYA", "Servicios"),
+            ("71338768", "FREDY ALEXANDER GUISAO OQUENDO", "Servicios")
         ]
-        for n, d, p, area_name in demo:
+
+        for pwd, nombre, area_name in personal_data:
             aid = area_ids.get(area_name)
-            cur = c.execute("INSERT INTO employees(company_id,site_id,schedule_id,area_id,name,document,position) VALUES(?,?,?,?,?,?,?)", (co, site, sch, aid, n, d, p))
+            cur = c.execute("INSERT INTO employees(company_id,site_id,schedule_id,area_id,name,document,position) VALUES(?,?,?,?,?,?,?)", 
+                            (co, site, sch, aid, nombre, pwd, area_name))
             eid = cur.lastrowid
-            c.execute("INSERT INTO users(company_id,employee_id,username,password_hash,role) VALUES(?,?,?,?,?)", (co, eid, n.split()[0].lower(), hashpw("123456"), "empleado"))
-        
-        c.execute("INSERT INTO users(company_id,username,password_hash,role) VALUES(?,?,?,?)", (co, "admin", hashpw("admin123"), "administrador"))
+            # Usuario para login: primer nombre en minúscula o un identificador único limpio
+            username = nombre.split()[0].lower() + "_" + pwd[-4:]
+            c.execute("INSERT INTO users(company_id,employee_id,username,password_hash,role) VALUES(?,?,?,?,?)", 
+                      (co, eid, username, hashpw(pwd), "empleado"))
+
+        # Usuario administrador con contraseña OMMA2016
+        c.execute("INSERT INTO users(company_id,username,password_hash,role) VALUES(?,?,?,?)", (co, "admin", hashpw("OMMA2016"), "administrador"))
     c.commit(); c.close()
 
 def current_user():
@@ -107,35 +151,65 @@ INDEX_HTML = """
         renderDashboard(data);
     }
     
-    function renderLogin() {
+    async function renderLogin() {
         document.getElementById('user-nav').innerHTML = '';
+        let res = await fetch('/api/employees/list');
+        let employees = res.ok ? await res.json() : [];
+
         document.getElementById('app-container').innerHTML = `
             <div class="row justify-content-center mt-5">
-                <div class="col-md-4 card p-4 shadow">
+                <div class="col-md-5 card p-4 shadow">
                     <h3 class="mb-3 text-center">Iniciar Sesión</h3>
                     <div id="login-error" class="alert alert-danger d-none"></div>
                     <form onsubmit="doLogin(event)">
                         <div class="mb-3">
-                            <label class="form-label">Usuario</label>
-                            <input type="text" id="username" class="form-control" required>
+                            <label class="form-label">Seleccione o busque su nombre:</label>
+                            <input type="text" id="emp-search" class="form-control mb-2" placeholder="Escriba para filtrar nombre..." oninput="filterEmployees()">
+                            <select id="user_id" class="form-select" size="5" required style="font-size: 14px;">
+                                <option value="admin">Admin (Administrador)</option>
+                                ${employees.map(e => `<option value="emp_${e.id}">${e.name} (${e.area_name || 'Sin área'})</option>`).join('')}
+                            </select>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Contraseña</label>
+                            <label class="form-label">Contraseña (Su Cédula o Clave Admin)</label>
                             <input type="password" id="password" class="form-control" required>
                         </div>
                         <button type="submit" class="btn btn-dark w-100">Ingresar</button>
                     </form>
                 </div>
             </div>`;
+        window.allEmployees = employees;
+    }
+
+    function filterEmployees() {
+        let query = document.getElementById('emp-search').value.toLowerCase();
+        let select = document.getElementById('user_id');
+        let html = `<option value="admin">Admin (Administrador)</option>`;
+        window.allEmployees.forEach(e => {
+            if (e.name.toLowerCase().includes(query)) {
+                html += `<option value="emp_${e.id}">${e.name} (${e.area_name || 'Sin área'})</option>`;
+            }
+        });
+        select.innerHTML = html;
     }
 
     async function doLogin(e) {
         e.preventDefault();
-        let u = document.getElementById('username').value;
+        let selection = document.getElementById('user_id').value;
         let p = document.getElementById('password').value;
+        let username = "";
+        
+        if (selection === 'admin') {
+            username = 'admin';
+        } else {
+            let empId = selection.replace('emp_', '');
+            let emp = window.allEmployees.find(x => x.id == empId);
+            if (emp) username = emp.username;
+        }
+
         let res = await fetch('/api/login', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({username: u, password: p})
+            body: JSON.stringify({username: username, password: p})
         });
         if (res.ok) { loadState(); }
         else { let err = await res.json(); document.getElementById('login-error').innerText = err.error; document.getElementById('login-error').classList.remove('d-none'); }
@@ -173,46 +247,6 @@ INDEX_HTML = """
                 <div class="row">
                     <div class="col-md-6">
                         <div class="card p-3 shadow-sm mb-4">
-                            <h4>Registrar Nuevo Empleado / Usuario</h4>
-                            <div id="emp-error" class="alert alert-danger d-none"></div>
-                            <form onsubmit="createEmployee(event)">
-                                <div class="mb-2">
-                                    <label class="form-label">Nombre Completo</label>
-                                    <input type="text" id="emp-name" class="form-control" required>
-                                </div>
-                                <div class="mb-2">
-                                    <label class="form-label">Documento</label>
-                                    <input type="text" id="emp-doc" class="form-control">
-                                </div>
-                                <div class="mb-2">
-                                    <label class="form-label">Cargo / Puesto</label>
-                                    <input type="text" id="emp-pos" class="form-control">
-                                </div>
-                                <div class="mb-2">
-                                    <label class="form-label">Área</label>
-                                    <select id="emp-area" class="form-select" required>
-                                        <option value="">Seleccione un área...</option>
-                                        ${data.areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
-                                    </select>
-                                </div>
-                                <div class="mb-2">
-                                    <label class="form-label">Sede</label>
-                                    <select id="emp-site" class="form-select" required>
-                                        ${data.sites.map(s => `<option value="${s.id}">${s.name}</option>`).join('')}
-                                    </select>
-                                </div>
-                                <div class="mb-2">
-                                    <label class="form-label">Usuario (para login)</label>
-                                    <input type="text" id="emp-user" class="form-control" placeholder="Ej: cperez" required>
-                                </div>
-                                <div class="mb-3">
-                                    <label class="form-label">Contraseña</label>
-                                    <input type="password" id="emp-pass" class="form-control" required>
-                                </div>
-                                <button type="submit" class="btn btn-dark w-100">Guardar Empleado y Usuario</button>
-                            </form>
-                        </div>
-                        <div class="card p-3 shadow-sm mb-4">
                             <h4>Configuración de Horarios de Áreas</h4>
                             <form onsubmit="saveAreaSchedule(event)" class="mb-3">
                                 <div class="mb-2">
@@ -233,26 +267,26 @@ INDEX_HTML = """
                     </div>
                     <div class="col-md-6">
                         <div class="card p-3 shadow-sm mb-4">
-                            <h4>Empleados Registrados</h4>
-                            <ul class="list-group list-group-flush" style="max-height: 400px; overflow-y: auto;">
-                                ${data.employees.map(e => `
-                                    <li class="list-group-item d-flex justify-content-between align-items-center">
-                                        <div>
-                                            <strong>${e.name}</strong><br>
-                                            <small class="text-muted">${e.position || 'Sin cargo'} - Doc: ${e.document || 'N/A'}</small>
-                                        </div>
-                                        <div>
-                                            <span class="badge bg-primary">${e.area_name || 'Sin área'}</span>
-                                            <span class="badge bg-secondary">${e.site_name || 'Sin sede'}</span>
-                                        </div>
-                                    </li>`).join('')}
-                            </ul>
-                        </div>
-                        <div class="card p-3 shadow-sm mb-4">
                             <h4>Reportes del Sistema</h4>
                             <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia (Excel / CSV)</a>
                         </div>
                     </div>
+                </div>
+                <div class="card p-3 shadow-sm mb-4">
+                    <h4>Empleados Registrados (${data.employees.length})</h4>
+                    <ul class="list-group list-group-flush" style="max-height: 400px; overflow-y: auto;">
+                        ${data.employees.map(e => `
+                            <li class="list-group-item d-flex justify-content-between align-items-center">
+                                <div>
+                                    <strong>${e.name}</strong><br>
+                                    <small class="text-muted">Doc: ${e.document || 'N/A'}</small>
+                                </div>
+                                <div>
+                                    <span class="badge bg-primary">${e.area_name || 'Sin área'}</span>
+                                    <span class="badge bg-secondary">${e.site_name || 'Sin sede'}</span>
+                                </div>
+                            </li>`).join('')}
+                    </ul>
                 </div>`;
         }
         document.getElementById('app-container').innerHTML = html;
@@ -276,32 +310,6 @@ INDEX_HTML = """
         }, err => { alert('Error obteniendo GPS: ' + err.message); });
     }
 
-    async function createEmployee(e) {
-        e.preventDefault();
-        let payload = {
-            name: document.getElementById('emp-name').value,
-            document: document.getElementById('emp-doc').value,
-            position: document.getElementById('emp-pos').value,
-            area_id: document.getElementById('emp-area').value,
-            site_id: document.getElementById('emp-site').value,
-            username: document.getElementById('emp-user').value,
-            password: document.getElementById('emp-pass').value
-        };
-        let res = await fetch('/api/employee', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify(payload)
-        });
-        if (res.ok) {
-            alert('Empleado y usuario creados exitosamente');
-            loadState();
-        } else {
-            let err = await res.json();
-            let errBox = document.getElementById('emp-error');
-            errBox.innerText = err.error;
-            errBox.classList.remove('d-none');
-        }
-    }
-
     async function saveAreaSchedule(e) {
         e.preventDefault();
         let areaId = document.getElementById('area-select').value;
@@ -322,6 +330,19 @@ INDEX_HTML = """
 
 @app.route("/")
 def index(): return render_template_string(INDEX_HTML)
+
+@app.get("/api/employees/list")
+def employees_list():
+    c = db()
+    rows = c.execute("""
+        SELECT e.id, e.name, u.username, ar.name as area_name 
+        FROM employees e 
+        JOIN users u ON u.employee_id = e.id 
+        LEFT JOIN areas ar ON ar.id = e.area_id 
+        ORDER BY e.name ASC
+    """).fetchall()
+    c.close()
+    return jsonify([dict(r) for r in rows])
 
 @app.post("/api/login")
 def login():
@@ -348,46 +369,10 @@ def state():
     sites = [dict(x) for x in c.execute("SELECT * FROM sites WHERE company_id=?", (cid,))]
     schedules = [dict(x) for x in c.execute("SELECT * FROM schedules WHERE company_id=?", (cid,))]
     areas = [dict(x) for x in c.execute("""SELECT a.*, s.name schedule_name FROM areas a LEFT JOIN schedules s ON s.id=a.schedule_id WHERE a.company_id=?""", (cid,))]
-    employees = [dict(x) for x in c.execute("""SELECT e.*,s.name site_name,h.name schedule_name, ar.name area_name FROM employees e LEFT JOIN sites s ON s.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id LEFT JOIN areas ar ON ar.id=e.area_id WHERE e.company_id=? ORDER BY e.id""", (cid,))]
+    employees = [dict(x) for x in c.execute("""SELECT e.*,s.name site_name,h.name schedule_name, ar.name area_name FROM employees e LEFT JOIN sites s ON s.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id LEFT JOIN areas ar ON ar.id=e.area_id WHERE e.company_id=? ORDER BY e.name ASC""", (cid,))]
     attendance = [dict(x) for x in c.execute("""SELECT a.*,e.name employee_name FROM attendance a JOIN employees e ON e.id=a.employee_id WHERE e.company_id=? ORDER BY a.id DESC LIMIT 100""", (cid,))]
     incidents = [dict(x) for x in c.execute("""SELECT i.*,e.name employee_name FROM incidents i JOIN employees e ON e.id=i.employee_id WHERE e.company_id=? ORDER BY i.id DESC""", (cid,))]
     c.close(); return jsonify(companies=companies, sites=sites, schedules=schedules, areas=areas, employees=employees, attendance=attendance, incidents=incidents, user=u)
-
-@app.post("/api/employee")
-def employee():
-    u = current_user()
-    if not u or u["role"] != "administrador": return jsonify(error="No autorizado"), 403
-    d = request.json or {}
-    
-    name = d.get("name", "").strip()
-    username = d.get("username", "").strip().lower()
-    password = d.get("password", "")
-    
-    if not name or not username or not password:
-        return jsonify(error="Nombre, usuario y contraseña son obligatorios"), 400
-        
-    c = db()
-    # Validar si el usuario ya existe
-    exists = c.execute("SELECT id FROM users WHERE lower(username)=?", (username,)).fetchone()
-    if exists:
-        c.close()
-        return jsonify(error="El nombre de usuario ya está en uso"), 400
-        
-    try:
-        cur = c.execute("INSERT INTO employees(company_id,site_id,area_id,name,document,position) VALUES(?,?,?,?,?,?)", 
-                        (u["company_id"], d.get("site_id"), d.get("area_id"), name, d.get("document", ""), d.get("position", "")))
-        eid = cur.lastrowid
-        
-        c.execute("INSERT INTO users(company_id,employee_id,username,password_hash,role) VALUES(?,?,?,?,?)", 
-                  (u["company_id"], eid, username, hashpw(password), "empleado"))
-        c.commit()
-    except Exception as e:
-        c.rollback()
-        c.close()
-        return jsonify(error=f"Error al registrar: {str(e)}"), 400
-        
-    c.close()
-    return jsonify(id=eid, username=username), 201
 
 @app.post("/api/area/schedule")
 def area_schedule():
