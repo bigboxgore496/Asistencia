@@ -869,6 +869,9 @@ def export_csv():
   return output
 
 
+# Inicialización de la base de datos para entornos de producción con Gunicorn
+init_db()
+
 if __name__ == "__main__":
-  init_db()
   app.run(debug=True, host="0.0.0.0", port=5000)
+```[cite: 2]
