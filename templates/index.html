@@ -90,17 +90,23 @@
         }
 
         async function registrarAsistencia(eventType) {
-            const res = await fetch('/api/attendance', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ event_type: eventType })
-            });
-            if (res.ok) {
-                alert('¡Asistencia registrada con éxito!');
-                loadState();
-            } else {
-                const err = await res.json();
-                alert(err.error || 'Error al registrar asistencia');
+            // Envía la marcación directamente sin bloqueos de GPS para garantizar respuesta inmediata
+            try {
+                const res = await fetch('/api/mark', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ event_type: eventType, latitude: null, longitude: null })
+                });
+                
+                const data = await res.json();
+                if (res.ok) {
+                    alert(`¡Marcación exitosa! (${data.status} a las ${data.time})`);
+                    loadState();
+                } else {
+                    alert(data.error || 'Error al registrar asistencia');
+                }
+            } catch (e) {
+                alert('Error de conexión al registrar.');
             }
         }
 
@@ -142,8 +148,8 @@
                     <h4>Registro de Asistencia</h4>
                     <p class="text-muted">Haga clic en el botón correspondiente para marcar su jornada.</p>
                     <div class="d-flex justify-content-center gap-3 mt-3">
-                        <button onclick="registrarAsistencia('entrada')" class="btn btn-success btn-lg px-4">Registrar Entrada</button>
-                        <button onclick="registrarAsistencia('salida')" class="btn btn-danger btn-lg px-4">Registrar Salida</button>
+                        <button onclick="registrarAsistencia('Entrada')" class="btn btn-success btn-lg px-4">Registrar Entrada</button>
+                        <button onclick="registrarAsistencia('Salida')" class="btn btn-danger btn-lg px-4">Registrar Salida</button>
                     </div>
                 </div>`;
             }
@@ -155,7 +161,7 @@
                     <table class="table table-striped">
                         <thead><tr><th>Empleado</th><th>Evento</th><th>Hora</th><th>Estado</th></tr></thead>
                         <tbody>
-                            ${stateData.attendance && stateData.attendance.length > 0 ? stateData.attendance.map(a => `<tr><td>${a.employee_name}</td><td>${a.event_type}</td><td>${a.event_time}</td><td><span class="badge bg-success">${a.status}</span></td></tr>`).join('') : '<tr><td colspan="4" class="text-center text-muted">No hay registros recientes</td></tr>'}
+                            ${stateData.attendance && stateData.attendance.length > 0 ? stateData.attendance.map(a => `<tr><td>${a.employee_name}</td><td>${a.event_type}</td><td>${a.event_time}</td><td><span class="badge bg-success">${a.status || 'Registrada'}</span></td></tr>`).join('') : '<tr><td colspan="4" class="text-center text-muted">No hay registros recientes</td></tr>'}
                         </tbody>
                     </table>
                 </div>
@@ -165,6 +171,9 @@
         }
 
         document.addEventListener('DOMContentLoaded', init);
+    </script>
+</body>
+</html>
     </script>
 </body>
 </html>
