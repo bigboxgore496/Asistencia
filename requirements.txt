@@ -1,5 +1,3 @@
-Flask>=3.0,<4
-gunicorn
+Flask
 gspread
-google-auth
 openpyxl
