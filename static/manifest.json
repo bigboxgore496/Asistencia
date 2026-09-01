@@ -1,0 +1,9 @@
+{
+  "name": "ASISTENCIA V5",
+  "short_name": "Asistencia",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#f5f7fb",
+  "theme_color": "#0969e8",
+  "description": "Control de asistencia con GPS"
+}
