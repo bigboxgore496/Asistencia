@@ -43,9 +43,14 @@ def init_db():
     CREATE TABLE IF NOT EXISTS areas(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,name TEXT NOT NULL,schedule_id INTEGER,FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(schedule_id) REFERENCES schedules(id));
     CREATE TABLE IF NOT EXISTS employees(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,site_id INTEGER,schedule_id INTEGER,area_id INTEGER,name TEXT NOT NULL,document TEXT,position TEXT,status TEXT DEFAULT 'Activo',FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(site_id) REFERENCES sites(id),FOREIGN KEY(schedule_id) REFERENCES schedules(id),FOREIGN KEY(area_id) REFERENCES areas(id));
     CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER,employee_id INTEGER,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,active INTEGER DEFAULT 1,FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(employee_id) REFERENCES employees(id));
-    CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,event_type TEXT NOT NULL,event_time TEXT NOT NULL,latitude REAL,longitude REAL,distance_m REAL,gps_valid INTEGER DEFAULT 0,status TEXT,late_minutes INTEGER DEFAULT 0,worked_minutes INTEGER DEFAULT 0,overtime_minutes INTEGER DEFAULT 0,FOREIGN KEY(employee_id) REFERENCES employees(id));
-    CREATE TABLE IF NOT EXISTS incidents(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,type TEXT NOT NULL,start_date TEXT,end_date TEXT,notes TEXT,status TEXT DEFAULT 'Pendiente',FOREIGN KEY(employee_id) REFERENCES employees(id));
+    CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,event_type TEXT NOT NULL,event_time TEXT NOT NULL,latitude REAL,longitude REAL,distance_m REAL,gps_valid INTEGER DEFAULT 0,status TEXT,late_minutes INTEGER DEFAULT 0,worked_minutes INTEGER DEFAULT 0,overtime_minutes INTEGER DEFAULT 0,project_code TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
     """)
+
+  try:
+    c.execute("ALTER TABLE attendance ADD COLUMN project_code TEXT")
+    c.commit()
+  except Exception:
+    pass
 
   if c.execute("SELECT COUNT(*) FROM companies").fetchone()[0] == 0:
     cur = c.execute("INSERT INTO companies(name) VALUES(?)", ("Omma Group",))
@@ -192,15 +197,27 @@ def hav(lat1, lon1, lat2, lon2):
 
 
 def sync_to_sheets(
-    employee_name, document, event_type, event_time, status, late_minutes
+    employee_name,
+    document,
+    event_type,
+    event_time,
+    status,
+    late_minutes,
+    project_code="",
 ):
   try:
     gc = gspread.service_account(filename="credentials.json")
     sh = gc.open("Nombre_De_Su_Google_Sheets")
     worksheet = sh.sheet1
-    worksheet.append_row(
-        [employee_name, document, event_type, event_time, status, late_minutes]
-    )
+    worksheet.append_row([
+        employee_name,
+        document,
+        event_type,
+        event_time,
+        status,
+        late_minutes,
+        project_code,
+    ])
   except Exception as e:
     print(f"Error al sincronizar con Google Sheets: {e}")
 
@@ -317,7 +334,7 @@ INDEX_HTML = """
             html += `
                 <div class="card p-4 shadow-sm text-center">
                     <h3>Registrar Asistencia</h3>
-                    <p class="text-muted">Marque su entrada o salida usando GPS (Radio 200m).</p>
+                    <p class="text-muted">Marque su entrada o salida usando GPS (Radio 200m). Al marcar salida se solicitará el código de proyecto.</p>
                     <div class="my-3">
                         <button class="btn btn-success btn-lg mx-2" onclick="markAttendance('Entrada')">Marcar Entrada</button>
                         <button class="btn btn-danger btn-lg mx-2" onclick="markAttendance('Salida')">Marcar Salida</button>
@@ -331,7 +348,7 @@ INDEX_HTML = """
             html += `
                 <div class="card p-3 shadow-sm mb-4">
                     <h4>Reportes del Sistema</h4>
-                    <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia Consolidado (Excel)</a>
+                    <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia Consolidado (Excel con Código de Proyecto)</a>
                 </div>
                 
                 <div class="card p-3 shadow-sm mb-4">
@@ -407,16 +424,30 @@ INDEX_HTML = """
 
     async function markAttendance(type) {
         if (!navigator.geolocation) { alert('Geolocalización no soportada'); return; }
+        
+        let projectCode = '';
+        if (type === 'Salida') {
+            let inputCode = prompt('Ingrese el Código del Proyecto (Formato: 2 letras y 3 números, Ej: DA 149):', '');
+            if (inputCode === null) return; // Cancelado
+            projectCode = inputCode.trim().toUpperCase();
+            let regex = /^[A-Z]{2}\s?\d{3}$/;
+            if (!regex.test(projectCode)) {
+                alert('Formato de código de proyecto inválido. Debe ser 2 letras y 3 números (Ej: DA 149).');
+                return;
+            }
+        }
+
         navigator.geolocation.getCurrentPosition(async pos => {
             let lat = pos.coords.latitude;
             let lon = pos.coords.longitude;
             let res = await fetch('/api/mark', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({event_type: type, latitude: lat, longitude: lon})
+                body: JSON.stringify({event_type: type, latitude: lat, longitude: lon, project_code: projectCode})
             });
             let data = await res.json();
             if (res.ok) {
-                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">${type} registrada a las ${data.time} - Estado: ${data.status}</div>`;
+                let projText = projectCode ? ` | Proyecto: ${projectCode}` : '';
+                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">${type} registrada a las ${data.time}${projText} - Estado: ${data.status}</div>`;
             } else {
                 document.getElementById('mark-result').innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
             }
@@ -553,9 +584,15 @@ def mark():
     typ = d.get("event_type")
     lat = d.get("latitude")
     lon = d.get("longitude")
+    project_code = (d.get("project_code") or "").strip().upper()
 
     if typ not in ("Entrada", "Salida"):
       return jsonify(error="Tipo inválido"), 400
+
+    if typ == "Salida" and not project_code:
+      return jsonify(
+          error="El código de proyecto es obligatorio al marcar salida."
+      ), 400
 
     c = db()
     row = c.execute(
@@ -648,8 +685,8 @@ def mark():
     c = db()
     cur = c.execute(
         """INSERT INTO
-        attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes,overtime_minutes)
-        VALUES(?,?,?,?,?,?,?,?,?,?)""",
+        attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes,overtime_minutes,project_code)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
         (
             u["employee_id"],
             typ,
@@ -661,6 +698,7 @@ def mark():
             status,
             late,
             extra_mins,
+            project_code,
         ),
     )
 
@@ -679,6 +717,7 @@ def mark():
             dt.strftime("%Y-%m-%d %H:%M:%S"),
             status,
             late,
+            project_code,
         )
       except Exception as sheet_err:
         print(f"Aviso Google Sheets: {sheet_err}")
@@ -690,6 +729,7 @@ def mark():
         status=status,
         gps_valid=valid,
         late_minutes=late,
+        project_code=project_code,
     )
   except Exception as e:
     return jsonify(error=f"Excepción interna: {str(e)}"), 500
@@ -705,7 +745,7 @@ def export_csv():
   rows = c.execute(
       """
         SELECT a.id, e.id as emp_id, e.name as employee_name, e.document, s.name as site_name, ar.name as area_name,
-               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes,
+               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code,
                COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
                COALESCE(ar_sch.wed, h.wed) wed, COALESCE(ar_sch.thu, h.thu) thu, 
                COALESCE(ar_sch.fri, h.fri) fri, COALESCE(ar_sch.sat, h.sat) sat, 
@@ -755,6 +795,7 @@ def export_csv():
           "distance_m": None,
           "late_minutes": 0,
           "total_extras": 0,
+          "project_code": "",
       }
 
     rec = daily_records[emp_key]
@@ -788,6 +829,8 @@ def export_csv():
 
     elif r["event_type"] == "Salida":
       rec["salida_time"] = time_formatted
+      if r["project_code"]:
+        rec["project_code"] = r["project_code"]
       if r["latitude"] is not None and rec["lat"] is None:
         rec["lat"] = r["latitude"]
         rec["lon"] = r["longitude"]
@@ -821,6 +864,7 @@ def export_csv():
       "Fecha",
       "Hora de ingreso",
       "Hora de Salida",
+      "Codigo de Proyecto",
       "Ubicacion Google Maps",
       "Distancia (m)",
       "Minutos Retardo",
@@ -847,7 +891,8 @@ def export_csv():
         r["site_name"],
         r["date"],
         r["entrada_time"],
-        r["salida_time"],
+        r["salyd_time"] if "salyd_time" in r else r["salida_time"],
+        r["project_code"],
         location_field,
         f"{r['distance_m']:.0f}" if r["distance_m"] is not None else "",
         r["late_minutes"],
