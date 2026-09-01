@@ -28,7 +28,7 @@ def init_db():
         cur = c.execute("INSERT INTO companies(name) VALUES(?)", ("Empresa Demo S.A.S.",))
         co = cur.lastrowid
         
-        cur = c.execute("INSERT INTO sites(company_id,name,latitude,longitude,radius_m) VALUES(?,?,?,?,?)", (co, 6.2442, -75.5812, 150, "Sede Principal"))
+        cur = c.execute("INSERT INTO sites(company_id,name,latitude,longitude,radius_m) VALUES(?,?,?,?,?)", (co, "Sede Principal", 6.2442, -75.5812, 150))
         site = cur.lastrowid
         
         cur = c.execute("""INSERT INTO schedules(company_id,name,mon,tue,wed,thu,fri,sat,sun,lunch_start,lunch_end,break_minutes,tolerance_minutes)
@@ -140,68 +140,74 @@ def incident():
 
 @app.post("/api/mark")
 def mark():
-    u = current_user()
-    if not u or u["role"] != "empleado" or not u["employee_id"]: 
-        return jsonify(error="Solo un empleado autenticado puede marcar"), 403
-    
-    d = request.json or {}
-    typ = d.get("event_type")
-    lat = d.get("latitude")
-    lon = d.get("longitude")
-    
-    if typ not in ("Entrada", "Salida"): 
-        return jsonify(error="Tipo inválido"), 400
-    
-    c = db()
-    row = c.execute("""SELECT e.*,si.latitude site_lat,si.longitude site_lon,si.radius_m,h.* FROM employees e
-      LEFT JOIN sites si ON si.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id WHERE e.id=? AND e.company_id=?""", (u["employee_id"], u["company_id"])).fetchone()
-    c.close()
-    
-    if not row: 
-        return jsonify(error="Empleado no encontrado"), 404
-    
-    if row["site_lat"] is None or row["site_lon"] is None or row["radius_m"] is None:
-        return jsonify(error="La sede asignada no tiene coordenadas GPS configuradas o el empleado no tiene sede asociada."), 400
-    
-    dist = None
-    valid = False
-    
-    if lat is not None and lon is not None:
-        try:
-            dist = hav(float(lat), float(lon), float(row["site_lat"]), float(row["site_lon"]))
-        except Exception as e:
-            return jsonify(error=f"Error al calcular la distancia GPS: {str(e)}"), 400
+    try:
+        u = current_user()
+        if not u or u["role"] != "empleado" or not u["employee_id"]: 
+            return jsonify(error="Solo un empleado autenticado puede marcar"), 403
+        
+        d = request.json or {}
+        typ = d.get("event_type")
+        lat = d.get("latitude")
+        lon = d.get("longitude")
+        
+        if typ not in ("Entrada", "Salida"): 
+            return jsonify(error="Tipo inválido"), 400
+        
+        c = db()
+        row = c.execute("""SELECT e.*,si.latitude site_lat,si.longitude site_lon,si.radius_m,h.* FROM employees e
+          LEFT JOIN sites si ON si.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id WHERE e.id=? AND e.company_id=?""", (u["employee_id"], u["company_id"])).fetchone()
+        c.close()
+        
+        if not row: 
+            return jsonify(error="Empleado no encontrado"), 404
             
-        valid = dist <= row["radius_m"]
-        if not valid: 
-            return jsonify(error=f"Fuera de la zona autorizada. Estás a {dist:.0f} metros de la sede (Radio permitido: {row['radius_m']}m)"), 403
-    else:
-        return jsonify(error="No se pudo capturar la ubicación GPS del dispositivo"), 400
+        if row["site_lat"] is None or row["site_lon"] is None or row["radius_m"] is None:
+            return jsonify(error="La sede asignada no tiene coordenadas GPS configuradas o el empleado no tiene sede asociada."), 400
+        
+        dist = None
+        valid = False
+        
+        if lat is not None and lon is not None:
+            try:
+                dist = hav(float(lat), float(lon), float(row["site_lat"]), float(row["site_lon"]))
+            except Exception as e:
+                return jsonify(error=f"Error al calcular la distancia GPS: {str(e)}"), 400
+                
+            valid = dist <= row["radius_m"]
+            if not valid: 
+                return jsonify(error=f"Fuera de la zona autorizada. Estás a {dist:.0f} metros de la sede (Radio permitido: {row['radius_m']}m)"), 403
+        else:
+            return jsonify(error="No se pudo capturar la ubicación GPS del dispositivo"), 400
 
-    dt = datetime.now()
-    status = "Registrada"
-    late = 0
-    
-    if typ == "Entrada":
-        days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-        period = row[days[dt.weekday()]]
-        if period:
-            start = int(period[:2]) * 60 + int(period[3:5])
-            actual = dt.hour * 60 + dt.minute
-            late = max(0, actual - start - int(row["tolerance_minutes"] or 0))
-            status = "A tiempo" if late == 0 else f"Retardo {late} min"
-    
-    c = db()
-    cur = c.execute("""INSERT INTO attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes) VALUES(?,?,?,?,?,?,?,?,?)""", (u["employee_id"], typ, dt.isoformat(timespec="seconds"), lat, lon, dist, int(valid), status, late))
-    
-    emp_info = c.execute("SELECT name, document FROM employees WHERE id=?", (u["employee_id"],)).fetchone()
-    c.commit()
-    c.close()
+        dt = datetime.now()
+        status = "Registrada"
+        late = 0
+        
+        if typ == "Entrada":
+            days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+            period = row[days[dt.weekday()]] if days[days[dt.weekday()]] in row.keys() else ""
+            if period:
+                start = int(period[:2]) * 60 + int(period[3:5])
+                actual = dt.hour * 60 + dt.minute
+                late = max(0, actual - start - int(row["tolerance_minutes"] or 0))
+                status = "A tiempo" if late == 0 else f"Retardo {late} min"
+        
+        c = db()
+        cur = c.execute("""INSERT INTO attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes) VALUES(?,?,?,?,?,?,?,?,?)""", (u["employee_id"], typ, dt.isoformat(timespec="seconds"), lat, lon, dist, int(valid), status, late))
+        
+        emp_info = c.execute("SELECT name, document FROM employees WHERE id=?", (u["employee_id"],)).fetchone()
+        c.commit()
+        c.close()
 
-    if emp_info:
-        sync_to_sheets(emp_info["name"], emp_info["document"], typ, dt.strftime("%Y-%m-%d %H:%M:%S"), status, late)
+        if emp_info:
+            try:
+                sync_to_sheets(emp_info["name"], emp_info["document"], typ, dt.strftime("%Y-%m-%d %H:%M:%S"), status, late)
+            except Exception as sheet_err:
+                print(f"Aviso Google Sheets: {sheet_err}")
 
-    return jsonify(id=cur.lastrowid, time=dt.strftime("%H:%M"), status=status, gps_valid=valid, late_minutes=late)
+        return jsonify(id=cur.lastrowid, time=dt.strftime("%H:%M"), status=status, gps_valid=valid, late_minutes=late)
+    except Exception as e:
+        return jsonify(error=f"Excepción interna: {str(e)}"), 500
 
 @app.get("/api/report/csv")
 def export_csv():
