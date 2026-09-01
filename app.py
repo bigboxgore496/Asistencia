@@ -159,10 +159,10 @@ INDEX_HTML = """
                     <form onsubmit="doLogin(event)">
                         <div class="mb-3">
                             <label class="form-label">Usuario</label>
-                            <input type="text" id="emp-search" class="form-control" list="employees-list" placeholder="Ingrese su usuario..." autocomplete="off" required>
+                            <input type="text" id="emp-search" class="form-control" list="employees-list" placeholder="Ingrese su nombre o usuario..." autocomplete="off" required>
                             <datalist id="employees-list">
                                 <option value="admin">
-                                ${employees.map(e => `<option value="${e.username}">`).join('')}
+                                ${employees.map(e => `<option value="${e.name}">`).join('')}
                             </datalist>
                         </div>
                         <div class="mb-3">
@@ -178,8 +178,16 @@ INDEX_HTML = """
 
     async function doLogin(e) {
         e.preventDefault();
-        let username = document.getElementById('emp-search').value.trim();
+        let inputVal = document.getElementById('emp-search').value.trim();
         let p = document.getElementById('password').value;
+
+        let username = inputVal;
+        if (inputVal.toLowerCase() !== 'admin' && window.allEmployees) {
+            let found = window.allEmployees.find(emp => emp.name.toLowerCase() === inputVal.toLowerCase());
+            if (found) {
+                username = found.username;
+            }
+        }
 
         let res = await fetch('/api/login', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
