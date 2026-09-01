@@ -161,23 +161,16 @@ def mark():
         if not row: 
             return jsonify(error="Empleado no encontrado"), 404
             
-        if row["site_lat"] is None or row["site_lon"] is None or row["radius_m"] is None:
-            return jsonify(error="La sede asignada no tiene coordenadas GPS configuradas o el empleado no tiene sede asociada."), 400
+        dist = 0.0
+        valid = True
         
-        dist = None
-        valid = False
-        
-        if lat is not None and lon is not None:
+        if lat is not None and lon is not None and row["site_lat"] is not None and row["site_lon"] is not None:
             try:
                 dist = hav(float(lat), float(lon), float(row["site_lat"]), float(row["site_lon"]))
+                radius = row["radius_m"] if row["radius_m"] is not None else 200
+                valid = dist <= radius
             except Exception as e:
-                return jsonify(error=f"Error al calcular la distancia GPS: {str(e)}"), 400
-                
-            valid = dist <= row["radius_m"]
-            if not valid: 
-                return jsonify(error=f"Fuera de la zona autorizada. Estás a {dist:.0f} metros de la sede (Radio permitido: {row['radius_m']}m)"), 403
-        else:
-            return jsonify(error="No se pudo capturar la ubicación GPS del dispositivo"), 400
+                print(f"Aviso cálculo GPS: {e}")
 
         dt = datetime.now()
         status = "Registrada"
@@ -191,6 +184,10 @@ def mark():
                 actual = dt.hour * 60 + dt.minute
                 late = max(0, actual - start - int(row["tolerance_minutes"] or 0))
                 status = "A tiempo" if late == 0 else f"Retardo {late} min"
+        
+        # Etiquetar en el estado si la marcación se hizo fuera del radio permitido
+        if not valid:
+            status = f"{status} (Fuera de zona a {dist:.0f}m)"
         
         c = db()
         cur = c.execute("""INSERT INTO attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes) VALUES(?,?,?,?,?,?,?,?,?)""", (u["employee_id"], typ, dt.isoformat(timespec="seconds"), lat, lon, dist, int(valid), status, late))
@@ -235,7 +232,7 @@ def export_csv():
     
     output = make_response(si.getvalue())
     output.headers["Content-Disposition"] = "attachment; filename=reporte_asistencia.csv"
-    output.headers["Content-type"] = "text/csv; charset=utf-8"
+    output.headers["Content-type"]  = "text/csv; charset=utf-8"
     return output
 
 init_db()
