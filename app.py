@@ -52,12 +52,18 @@ def init_db():
     CREATE TABLE IF NOT EXISTS areas(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,name TEXT NOT NULL,schedule_id INTEGER,FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(schedule_id) REFERENCES schedules(id));
     CREATE TABLE IF NOT EXISTS employees(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,site_id INTEGER,schedule_id INTEGER,area_id INTEGER,name TEXT NOT NULL,document TEXT,position TEXT,status TEXT DEFAULT 'Activo',FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(site_id) REFERENCES sites(id),FOREIGN KEY(schedule_id) REFERENCES schedules(id),FOREIGN KEY(area_id) REFERENCES areas(id));
     CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER,employee_id INTEGER,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,active INTEGER DEFAULT 1,device_token TEXT,FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(employee_id) REFERENCES employees(id));
-    CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,event_type TEXT NOT NULL,event_time TEXT NOT NULL,latitude REAL,longitude REAL,distance_m REAL,gps_valid INTEGER DEFAULT 0,status TEXT,late_minutes INTEGER DEFAULT 0,worked_minutes INTEGER DEFAULT 0,overtime_minutes INTEGER DEFAULT 0,project_code TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
+    CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,event_type TEXT NOT NULL,event_time TEXT NOT NULL,latitude REAL,longitude REAL,distance_m REAL,gps_valid INTEGER DEFAULT 0,status TEXT,late_minutes INTEGER DEFAULT 0,worked_minutes INTEGER DEFAULT 0,overtime_minutes INTEGER DEFAULT 0,project_code TEXT,external_work_reason TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
     CREATE TABLE IF NOT EXISTS incidents(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,description TEXT,date TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
     """)
 
   try:
     c.execute("ALTER TABLE attendance ADD COLUMN project_code TEXT")
+    c.commit()
+  except Exception:
+    pass
+
+  try:
+    c.execute("ALTER TABLE attendance ADD COLUMN external_work_reason TEXT")
     c.commit()
   except Exception:
     pass
@@ -75,14 +81,14 @@ def init_db():
     cur = c.execute(
         "INSERT INTO sites(company_id,name,latitude,longitude,radius_m)"
         " VALUES(?,?,?,?,?)",
-        (co, "Sede Principal", 6.214110727151654, -75.58268995990919, 200),
+        (co, "Sede Principal", 6.214110727151654, -75.58268995990919, 100),
     )
     site_principal = cur.lastrowid
 
     cur = c.execute(
         "INSERT INTO sites(company_id,name,latitude,longitude,radius_m)"
         " VALUES(?,?,?,?,?)",
-        (co, "Los Del Roble", 6.2000000, -75.5700000, 200),
+        (co, "Los Del Roble", 6.2000000, -75.5700000, 100),
     )
     site_roble = cur.lastrowid
 
@@ -239,6 +245,7 @@ def sync_to_sheets(
     status,
     late_minutes,
     project_code="",
+    external_work_reason="",
 ):
   try:
     gc = gspread.service_account(filename="credentials.json")
@@ -252,6 +259,7 @@ def sync_to_sheets(
         status,
         late_minutes,
         project_code,
+        external_work_reason,
     ])
   except Exception as e:
     print(f"Error al sincronizar con Google Sheets: {e}")
@@ -390,14 +398,14 @@ INDEX_HTML = """
         let html = `
             <div class="card p-4 shadow-sm mb-4">
                 <h2>Panel de Control - Omma Group</h2>
-                <p class="text-muted">Control de doble registro de ubicación (Ingreso y Salida independientes con GPS).</p>
+                <p class="text-muted">Control de doble registro de ubicación (Ingreso y Salida independientes con GPS - Radio 100m).</p>
             </div>`;
 
         if (data.user.role === 'empleado') {
             html += `
                 <div class="card p-4 shadow-sm text-center">
                     <h3>Registro de Asistencia GPS</h3>
-                    <p class="text-muted">Debe realizar de forma independiente el registro de su <strong>Entrada</strong> y su <strong>Salida</strong> (Radio 200m).</p>
+                    <p class="text-muted">Debe realizar de forma independiente el registro de su <strong>Entrada</strong> y su <strong>Salida</strong> (Radio 100m).</p>
                     <div class="my-3">
                         <button class="btn btn-success btn-lg mx-2" onclick="markAttendance('Entrada')">Marcar Entrada</button>
                         <button class="btn btn-danger btn-lg mx-2" onclick="markAttendance('Salida')">Marcar Salida</button>
@@ -500,30 +508,62 @@ INDEX_HTML = """
 
     async function markAttendance(type) {
         if (!navigator.geolocation) { alert('Geolocalización no soportada'); return; }
-        
-        let projectCode = '';
-        if (type === 'Salida') {
-            let inputCode = prompt('Ingrese el Código del o los Proyectos en los que Laboró Ej: DA 149', '');
-            if (inputCode === null) return;
-            projectCode = inputCode.trim().toUpperCase();
-            let regex = /^[A-Z]{2}\s?\d{3}$/;
-            if (!regex.test(projectCode)) {
-                alert('Formato de código de proyecto inválido. Debe ser 2 letras y 3 números (Ej: DA 149).');
-                return;
-            }
-        }
 
         navigator.geolocation.getCurrentPosition(async pos => {
             let lat = pos.coords.latitude;
             let lon = pos.coords.longitude;
+            
+            // Verificación previa rápida de distancia simulando el radio de 100m para disparar la pregunta si aplica
+            // O dejamos que el servidor calcule o enviamos para procesar la regla.
+            // Para asegurar una excelente experiencia, consultamos primero o manejamos con el payload.
+            // Aquí podemos pedir los datos adicionales si el usuario marca y está fuera o de forma general para salida / fuera de zona.
+            
+            let projectCode = '';
+            if (type === 'Salida') {
+                let inputCode = prompt('Ingrese el Código del o los Proyectos en los que Laboró Ej: DA 149', '');
+                if (inputCode === null) return;
+                projectCode = inputCode.trim().toUpperCase();
+                let regex = /^[A-Z]{2}\s?\d{3}$/;
+                if (!regex.test(projectCode)) {
+                    alert('Formato de código de proyecto inválido. Debe ser 2 letras y 3 números (Ej: DA 149).');
+                    return;
+                }
+            }
+
+            // Realizamos la petición inicial para evaluar distancia en servidor o enviamos ubicación
+            let resPre = await fetch('/api/mark', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({event_type: type, latitude: lat, longitude: lon, project_code: projectCode, check_distance_only: true})
+            });
+            let dataPre = await resPre.json();
+            
+            let externalReason = '';
+            if (dataPre.distance_m > 100) {
+                let reasonPrompt = prompt(`Se encuentra a ${Math.round(dataPre.distance_m)} metros de la sede (fuera del radio permitido de 100m).\n\n¿En qué obra o proyecto externo se encuentra laborando? (Ej: Obra El Poblado / Mantenimiento Externo):`, '');
+                if (reasonPrompt === null) return; // Cancela
+                externalReason = reasonPrompt.trim();
+                if (!externalReason) {
+                    alert('Es obligatorio especificar la obra o motivo externo cuando se encuentra a más de 100 metros de la sede.');
+                    return;
+                }
+            }
+
+            // Envío definitivo con el motivo si aplica
             let res = await fetch('/api/mark', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({event_type: type, latitude: lat, longitude: lon, project_code: projectCode})
+                body: JSON.stringify({
+                    event_type: type, 
+                    latitude: lat, 
+                    longitude: lon, 
+                    project_code: projectCode, 
+                    external_work_reason: externalReason
+                })
             });
             let data = await res.json();
             if (res.ok) {
                 let projText = projectCode ? ` | Proyecto: ${projectCode}` : '';
-                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">Ubicación GPS registrada para ${type} a las ${data.time}${projText} - Estado: ${data.status}</div>`;
+                let extText = externalReason ? ` | Obra Externa: ${externalReason}` : '';
+                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">Ubicación GPS registrada para ${type} a las ${data.time}${projText}${extText} - Estado: ${data.status}</div>`;
             } else {
                 document.getElementById('mark-result').innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
             }
@@ -706,6 +746,8 @@ def mark():
     lat = d.get("latitude")
     lon = d.get("longitude")
     project_code = (d.get("project_code") or "").strip().upper()
+    external_work_reason = (d.get("external_work_reason") or "").strip()
+    check_distance_only = d.get("check_distance_only", False)
 
     if typ not in ("Entrada", "Salida"):
       return jsonify(error="Tipo inválido"), 400
@@ -717,30 +759,7 @@ def mark():
           )
       ), 400
 
-    if typ == "Salida" and not project_code:
-      return jsonify(
-          error="El código de proyecto es obligatorio al marcar salida."
-      ), 400
-
-    dt = datetime.now(COLOMBIA_TZ)
-    today_str = dt.date().isoformat()
-
     c = db()
-    existing_mark = c.execute(
-        """SELECT id FROM attendance 
-           WHERE employee_id = ? AND event_type = ? AND DATE(event_time) = ?""",
-        (u["employee_id"], typ, today_str),
-    ).fetchone()
-
-    if existing_mark:
-      c.close()
-      return jsonify(
-          error=(
-              f"Ya ha registrado su ubicación de {typ} el día de hoy. No se"
-              " permiten registros duplicados del mismo evento."
-          )
-      ), 400
-
     row = c.execute(
         """SELECT e.*, si.latitude site_lat, si.longitude site_lon, si.radius_m, 
                             COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
@@ -772,10 +791,41 @@ def mark():
             float(row["site_lat"]),
             float(row["site_lon"]),
         )
-        radius = row["radius_m"] if row["radius_m"] is not None else 200
+        radius = row["radius_m"] if row["radius_m"] is not None else 100
         valid = dist <= radius
       except Exception as e:
         print(f"Aviso cálculo GPS: {e}")
+
+    if check_distance_only:
+      c.close()
+      return jsonify(distance_m=dist, radius=100)
+
+    dt = datetime.now(COLOMBIA_TZ)
+    today_str = dt.date().isoformat()
+
+    existing_mark = c.execute(
+        """SELECT id FROM attendance 
+           WHERE employee_id = ? AND event_type = ? AND DATE(event_time) = ?""",
+        (u["employee_id"], typ, today_str),
+    ).fetchone()
+
+    if existing_mark:
+      c.close()
+      return jsonify(
+          error=(
+              f"Ya ha registrado su ubicación de {typ} el día de hoy. No se"
+              " permiten registros duplicados del mismo evento."
+          )
+      ), 400
+
+    if dist > 100 and not external_work_reason:
+      c.close()
+      return jsonify(
+          error=(
+              "Se encuentra a más de 100 metros de la sede y es obligatorio"
+              " especificar la obra o proyecto externo."
+          )
+      ), 400
 
     status = "Registrada"
     late = 0
@@ -818,8 +868,8 @@ def mark():
 
     cur = c.execute(
         """INSERT INTO
-        attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes,overtime_minutes,project_code)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes,overtime_minutes,project_code,external_work_reason)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             u["employee_id"],
             typ,
@@ -832,6 +882,7 @@ def mark():
             late,
             extra_mins,
             project_code,
+            external_work_reason,
         ),
     )
 
@@ -851,6 +902,7 @@ def mark():
             status,
             late,
             project_code,
+            external_work_reason,
         )
       except Exception as sheet_err:
         print(f"Aviso Google Sheets: {sheet_err}")
@@ -863,6 +915,7 @@ def mark():
         gps_valid=valid,
         late_minutes=late,
         project_code=project_code,
+        external_work_reason=external_work_reason,
     )
   except Exception as e:
     return jsonify(error=f"Excepción interna: {str(e)}"), 500
@@ -878,7 +931,7 @@ def export_csv():
   rows = c.execute(
       """
         SELECT a.id, e.id as emp_id, e.name as employee_name, e.document, s.name as site_name, ar.name as area_name,
-               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code
+               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code, a.external_work_reason
         FROM attendance a 
         JOIN employees e ON e.id = a.employee_id 
         LEFT JOIN sites s ON s.id = e.site_id 
@@ -925,6 +978,7 @@ def export_csv():
         "late": r["late_minutes"],
         "overtime": r["overtime_minutes"],
         "project_code": r["project_code"],
+        "external_work_reason": r["external_work_reason"],
     }
 
     if r["event_type"] == "Entrada":
@@ -945,11 +999,13 @@ def export_csv():
       "Entrada - Hora",
       "Entrada - GPS",
       "Entrada - Distancia (m)",
+      "Entrada - Obra/Motivo Externo",
       "Entrada - Estado",
       "Salida - Hora",
       "Salida - GPS",
       "Salida - Distancia (m)",
       "Salida - Proyecto",
+      "Salida - Obra/Motivo Externo",
       "Salida - Estado",
       "Minutos Retardo",
       "Total Extras",
@@ -998,11 +1054,13 @@ def export_csv():
         ent.get("time", ""),
         ent_maps,
         ent_dist,
+        ent.get("external_work_reason", ""),
         ent.get("status", ""),
         sal.get("time", ""),
         sal_maps,
         sal_dist,
         sal.get("project_code", ""),
+        sal.get("external_work_reason", ""),
         sal.get("status", ""),
         int(ent.get("late", 0) or 0),
         int(sal.get("overtime", 0) or 0),
