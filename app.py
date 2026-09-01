@@ -1,5 +1,5 @@
 from flask import Flask, request, jsonify, render_template, session, make_response
-import sqlite3, math, hashlib, secrets, csv, io
+import sqlite3, math, hashlib, secrets, csv, io, gspread
 from pathlib import Path
 from datetime import datetime
 
@@ -53,6 +53,15 @@ def hav(lat1, lon1, lat2, lon2):
     R = 6371000; p1 = math.radians(lat1); p2 = math.radians(lat2); dp = math.radians(lat2 - lat1); dl = math.radians(lon2 - lon1)
     a = math.sin(dp / 2)**2 + math.cos(p1) * math.cos(p2) * math.sin(dl / 2)**2
     return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+def sync_to_sheets(employee_name, document, event_type, event_time, status, late_minutes):
+    try:
+        gc = gspread.service_account(filename="credentials.json")
+        sh = gc.open("Nombre_De_Su_Google_Sheets")
+        worksheet = sh.sheet1
+        worksheet.append_row([employee_name, document, event_type, event_time, status, late_minutes])
+    except Exception as e:
+        print(f"Error al sincronizar con Google Sheets: {e}")
 
 @app.route("/")
 def index(): return render_template("index.html", user=current_user())
@@ -149,7 +158,16 @@ def mark():
         if period:
             start = int(period[:2]) * 60 + int(period[3:5]); actual = dt.hour * 60 + dt.minute; late = max(0, actual - start - int(row["tolerance_minutes"] or 0))
             status = "A tiempo" if late == 0 else f"Retardo {late} min"
-    c = db(); cur = c.execute("""INSERT INTO attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes) VALUES(?,?,?,?,?,?,?,?,?)""", (u["employee_id"], typ, dt.isoformat(timespec="seconds"), lat, lon, dist, int(valid), status, late)); c.commit(); c.close()
+    
+    c = db()
+    cur = c.execute("""INSERT INTO attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes) VALUES(?,?,?,?,?,?,?,?,?)""", (u["employee_id"], typ, dt.isoformat(timespec="seconds"), lat, lon, dist, int(valid), status, late))
+    
+    emp_info = c.execute("SELECT name, document FROM employees WHERE id=?", (u["employee_id"],)).fetchone()
+    c.commit(); c.close()
+
+    if emp_info:
+        sync_to_sheets(emp_info["name"], emp_info["document"], typ, dt.strftime("%Y-%m-%d %H:%M:%S"), status, late)
+
     return jsonify(id=cur.lastrowid, time=dt.strftime("%H:%M"), status=status, gps_valid=valid, late_minutes=late)
 
 @app.get("/api/report/csv")
