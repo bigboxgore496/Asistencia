@@ -275,7 +275,7 @@ INDEX_HTML = """
                     <div id="login-error" class="alert alert-danger d-none"></div>
                     <form onsubmit="doLogin(event)">
                         <div class="mb-3">
-                            <label class="form-label">Nombre del Empleado o Usuario</label>
+                            <label class="form-label">Nombre de Usuario</label>
                             <input type="text" id="emp-search" class="form-control" list="employees-list" placeholder="Seleccione o escriba su nombre..." autocomplete="off" required>
                             <datalist id="employees-list">
                                 <option value="admin">
@@ -283,8 +283,8 @@ INDEX_HTML = """
                             </datalist>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Contraseña (Número de Cédula)</label>
-                            <input type="password" id="password" class="form-control" placeholder="Ingrese su número de cédula..." required>
+                            <label class="form-label">Contraseña</label>
+                            <input type="password" id="password" class="form-control" placeholder="Ingrese su contraseña..." required>
                         </div>
                         <button type="submit" class="btn btn-dark w-100">Ingresar</button>
                     </form>
@@ -487,7 +487,6 @@ def login():
   p_hash = hashpw(p)
   c = db()
 
-  # Permite buscar por nombre completo, nombre de usuario o cédula
   row = c.execute(
       """
         SELECT u.* FROM users u 
@@ -924,4 +923,4 @@ def export_csv():
 init_db()
 
 if __name__ == "__main__":
-  app.run(debug=True, host="0.0.0.0", port=5000)
+  app.run(debug=True, host="0.0.0.0", port5000=5000)
