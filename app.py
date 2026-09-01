@@ -158,16 +158,16 @@ INDEX_HTML = """
                     <div id="login-error" class="alert alert-danger d-none"></div>
                     <form onsubmit="doLogin(event)">
                         <div class="mb-3">
-                            <label class="form-label">Escriba su nombre o área:</label>
-                            <input type="text" id="emp-search" class="form-control" list="employees-list" placeholder="Comience a escribir..." autocomplete="off" required>
+                            <label class="form-label">Usuario</label>
+                            <input type="text" id="emp-search" class="form-control" list="employees-list" placeholder="Ingrese su usuario..." autocomplete="off" required>
                             <datalist id="employees-list">
-                                <option value="Admin (Administrador)">
-                                ${employees.map(e => `<option value="${e.name} (${e.area_name || 'Sin área'})">`).join('')}
+                                <option value="admin">
+                                ${employees.map(e => `<option value="${e.username}">`).join('')}
                             </datalist>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Contraseña (Su Cédula o Clave Admin)</label>
-                            <input type="password" id="password" class="form-control" required>
+                            <label class="form-label">Contraseña</label>
+                            <input type="password" id="password" class="form-control" placeholder="Ingrese su contraseña..." required>
                         </div>
                         <button type="submit" class="btn btn-dark w-100">Ingresar</button>
                     </form>
@@ -178,21 +178,8 @@ INDEX_HTML = """
 
     async function doLogin(e) {
         e.preventDefault();
-        let val = document.getElementById('emp-search').value.trim();
+        let username = document.getElementById('emp-search').value.trim();
         let p = document.getElementById('password').value;
-        let username = "";
-        
-        if (val === "Admin (Administrador)") {
-            username = 'admin';
-        } else {
-            let emp = window.allEmployees.find(x => `${x.name} (${x.area_name || 'Sin área'})` === val || x.name.toLowerCase() === val.toLowerCase());
-            if (emp) {
-                username = emp.username;
-            } else {
-                let partial = window.allEmployees.find(x => val.toUpperCase().includes(x.name.toUpperCase()));
-                if (partial) username = partial.username;
-            }
-        }
 
         let res = await fetch('/api/login', {
             method: 'POST', headers: {'Content-Type': 'application/json'},
@@ -306,7 +293,6 @@ INDEX_HTML = """
                 let chk = document.getElementById(`chk-${d}`);
                 if (chk) chk.checked = (val !== '');
             });
-            // Tomar la hora del primer día configurado si existe
             let firstActive = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(d => area[d]).find(v => v && v.includes('-'));
             if (firstActive) {
                 let parts = firstActive.split('-');
@@ -426,14 +412,12 @@ def area_schedule_custom():
     sun = d.get("sun", "")
 
     c = db()
-    # Crear un nuevo registro de horario para el área
     cur = c.execute("""
         INSERT INTO schedules(company_id, name, mon, tue, wed, thu, fri, sat, sun, lunch_start, lunch_end, break_minutes, tolerance_minutes)
         VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, '12:00', '13:00', 60, 10)
     """, (u["company_id"], name, mon, tue, wed, thu, fri, sat, sun))
     new_sch_id = cur.lastrowid
 
-    # Actualizar el área con este nuevo horario
     c.execute("UPDATE areas SET schedule_id=? WHERE id=? AND company_id=?", (new_sch_id, area_id, u["company_id"]))
     c.commit(); c.close()
     return jsonify(ok=True)
