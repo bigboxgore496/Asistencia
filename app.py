@@ -51,13 +51,19 @@ def init_db():
     CREATE TABLE IF NOT EXISTS schedules(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,name TEXT NOT NULL,mon TEXT DEFAULT '',tue TEXT DEFAULT '',wed TEXT DEFAULT '',thu TEXT DEFAULT '',fri TEXT DEFAULT '',sat TEXT DEFAULT '',sun TEXT DEFAULT '',lunch_start TEXT DEFAULT '',lunch_end TEXT DEFAULT '',break_minutes INTEGER DEFAULT 30,tolerance_minutes INTEGER DEFAULT 10,FOREIGN KEY(company_id) REFERENCES companies(id));
     CREATE TABLE IF NOT EXISTS areas(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,name TEXT NOT NULL,schedule_id INTEGER,FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(schedule_id) REFERENCES schedules(id));
     CREATE TABLE IF NOT EXISTS employees(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,site_id INTEGER,schedule_id INTEGER,area_id INTEGER,name TEXT NOT NULL,document TEXT,position TEXT,status TEXT DEFAULT 'Activo',FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(site_id) REFERENCES sites(id),FOREIGN KEY(schedule_id) REFERENCES schedules(id),FOREIGN KEY(area_id) REFERENCES areas(id));
-    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER,employee_id INTEGER,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,active INTEGER DEFAULT 1,FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(employee_id) REFERENCES employees(id));
+    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER,employee_id INTEGER,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,active INTEGER DEFAULT 1,device_token TEXT,FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(employee_id) REFERENCES employees(id));
     CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,event_type TEXT NOT NULL,event_time TEXT NOT NULL,latitude REAL,longitude REAL,distance_m REAL,gps_valid INTEGER DEFAULT 0,status TEXT,late_minutes INTEGER DEFAULT 0,worked_minutes INTEGER DEFAULT 0,overtime_minutes INTEGER DEFAULT 0,project_code TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
     CREATE TABLE IF NOT EXISTS incidents(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,description TEXT,date TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
     """)
 
   try:
     c.execute("ALTER TABLE attendance ADD COLUMN project_code TEXT")
+    c.commit()
+  except Exception:
+    pass
+
+  try:
+    c.execute("ALTER TABLE users ADD COLUMN device_token TEXT")
     c.commit()
   except Exception:
     pass
@@ -261,6 +267,27 @@ INDEX_HTML = """
         <!-- Contenido dinámico -->
     </div>
     <script>
+    function getDeviceUUID() {
+        let name = "device_uuid=";
+        let decodedCookie = decodeURIComponent(document.cookie);
+        let ca = decodedCookie.split(';');
+        for(let i = 0; i < ca.length; i++) {
+            let c = ca[i];
+            while (c.charAt(0) == ' ') {
+                c = c.substring(1);
+            }
+            if (c.indexOf(name) == 0) {
+                return c.substring(name.length, c.length);
+            }
+        }
+        let uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+        document.cookie = "device_uuid=" + uuid + "; max-age=315360000; path=/";
+        return uuid;
+    }
+
     async function loadState() {
         let res = await fetch('/api/state');
         if (!res.ok) { renderLogin(); return; }
@@ -304,12 +331,13 @@ INDEX_HTML = """
 
         let inputVal = searchEl.value.trim();
         let p = passEl.value.trim();
+        let deviceToken = getDeviceUUID();
 
         try {
             let res = await fetch('/api/login', {
                 method: 'POST', 
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({username: inputVal, password: p})
+                body: JSON.stringify({username: inputVal, password: p, device_token: deviceToken})
             });
             
             let data = await res.json();
@@ -342,14 +370,14 @@ INDEX_HTML = """
         let html = `
             <div class="card p-4 shadow-sm mb-4">
                 <h2>Panel de Control - Omma Group</h2>
-                <p class="text-muted">Sistema de control de asistencia con validación GPS obligatoria tanto al marcar Entrada como al marcar Salida.</p>
+                <p class="text-muted">Sistema de control de asistencia con validación GPS obligatoria y asociación estricta de dispositivo.</p>
             </div>`;
 
         if (data.user.role === 'empleado') {
             html += `
                 <div class="card p-4 shadow-sm text-center">
                     <h3>Registrar Asistencia</h3>
-                    <p class="text-muted">Marque su entrada o salida usando GPS (Radio 200m). La ubicación se registra y valida en ambos momentos.</p>
+                    <p class="text-muted">Marque su entrada o salida usando GPS (Radio 200m). Dispositivo vinculado de forma única.</p>
                     <div class="my-3">
                         <button class="btn btn-success btn-lg mx-2" onclick="markAttendance('Entrada')">Marcar Entrada</button>
                         <button class="btn btn-danger btn-lg mx-2" onclick="markAttendance('Salida')">Marcar Salida</button>
@@ -363,7 +391,7 @@ INDEX_HTML = """
             html += `
                 <div class="card p-3 shadow-sm mb-4">
                     <h4>Reportes del Sistema</h4>
-                    <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia (Excel con Registros Independientes)</a>
+                    <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia (Excel)</a>
                 </div>
                 
                 <div class="card p-3 shadow-sm mb-4">
@@ -430,11 +458,24 @@ INDEX_HTML = """
                     <strong>${e.name}</strong><br>
                     <small class="text-muted">Doc: ${e.document || 'N/A'}</small>
                 </div>
-                <div>
+                <div class="d-flex align-items-center gap-2">
                     <span class="badge bg-primary">${e.area_name || 'Sin área'}</span>
                     <span class="badge bg-secondary">${e.site_name || 'Sin sede'}</span>
+                    ${e.user_id ? `<button class="btn btn-outline-warning btn-sm" onclick="resetDevice(${e.user_id})">Reiniciar Celular</button>` : ''}
                 </div>
             </li>`).join('');
+    }
+
+    async function resetDevice(userId) {
+        if (!confirm('¿Está seguro de desvincular el dispositivo de este empleado para permitirle registrar uno nuevo?')) return;
+        let res = await fetch(`/api/admin/reset-device/${userId}`, {method: 'POST'});
+        if (res.ok) {
+            alert('Dispositivo desvinculado con éxito.');
+            loadState();
+        } else {
+            let data = await res.json();
+            alert(data.error || 'Error al desvincular dispositivo');
+        }
     }
 
     async function markAttendance(type) {
@@ -443,7 +484,7 @@ INDEX_HTML = """
         let projectCode = '';
         if (type === 'Salida') {
             let inputCode = prompt('Ingrese el Código del o los Proyectos en los que Laboró Ej: DA 149', '');
-            if (inputCode === null) return; // Cancelado
+            if (inputCode === null) return;
             projectCode = inputCode.trim().toUpperCase();
             let regex = /^[A-Z]{2}\s?\d{3}$/;
             if (!regex.test(projectCode)) {
@@ -500,6 +541,7 @@ def login():
   d = request.json or {}
   login_input = (d.get("username") or "").strip()
   p = d.get("password") or ""
+  client_device_token = (d.get("device_token") or "").strip()
   p_hash = hashpw(p)
 
   c = db()
@@ -531,8 +573,41 @@ def login():
   if not matched_user:
     return jsonify(error="Usuario o contraseña incorrectos"), 401
 
+  # Validación de Asociación de Dispositivo para Empleados
+  if matched_user["role"] == "empleado":
+    c = db()
+    if not matched_user["device_token"]:
+      if client_device_token:
+        c.execute(
+            "UPDATE users SET device_token = ? WHERE id = ?",
+            (client_device_token, matched_user["id"]),
+        )
+        c.commit()
+        matched_user["device_token"] = client_device_token
+    elif matched_user["device_token"] != client_device_token:
+      c.close()
+      return jsonify(
+          error=(
+              "Este usuario está asociado a otro dispositivo móvil. Contacte"
+              " al administrador para desvincularlo."
+          )
+      ), 403
+    c.close()
+
   session["uid"] = matched_user["id"]
   return jsonify(user=matched_user)
+
+
+@app.post("/api/admin/reset-device/<int:user_id>")
+def reset_device(user_id):
+  u = current_user()
+  if not u or u["role"] != "administrador":
+    return jsonify(error="No autorizado"), 403
+  c = db()
+  c.execute("UPDATE users SET device_token = NULL WHERE id = ?", (user_id,))
+  c.commit()
+  c.close()
+  return jsonify(ok=True)
 
 
 @app.post("/api/logout")
@@ -579,7 +654,7 @@ def state():
   employees = [
       dict(x)
       for x in c.execute(
-          """SELECT e.*,s.name site_name,h.name schedule_name, ar.name area_name FROM employees e LEFT JOIN sites s ON s.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id LEFT JOIN areas ar ON ar.id=e.area_id WHERE e.company_id=? ORDER BY e.name ASC""",
+          """SELECT e.*,s.name site_name,h.name schedule_name, ar.name area_name, u.id as user_id, u.device_token FROM employees e LEFT JOIN sites s ON s.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id LEFT JOIN areas ar ON ar.id=e.area_id LEFT JOIN users u ON u.employee_id=e.id WHERE e.company_id=? ORDER BY e.name ASC""",
           (cid,),
       )
   ]
