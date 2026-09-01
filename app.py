@@ -33,19 +33,16 @@ def init_db():
         cur = c.execute("INSERT INTO sites(company_id,name,latitude,longitude,radius_m) VALUES(?,?,?,?,?)", (co, "Sede Principal", 6.214110727151654, -75.58268995990919, 200))
         site = cur.lastrowid
         
-        # Horario normal Lunes a Sábado de 7:00 am a 3:00 pm (07:00-15:00)
         cur = c.execute("""INSERT INTO schedules(company_id,name,mon,tue,wed,thu,fri,sat,sun,lunch_start,lunch_end,break_minutes,tolerance_minutes)
                      VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (co, "Horario Normal (7am - 3pm)", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "", "12:00", "13:00", 60, 10))
         sch = cur.lastrowid
         
-        # Crear todas las áreas únicas de la imagen
         area_names_list = ["Administración", "Comercial", "i+D", "Jefes", "Logistica", "Produccion", "Servicios"]
         area_ids = {}
         for aname in area_names_list:
             cur = c.execute("INSERT INTO areas(company_id,name,schedule_id) VALUES(?,?,?)", (co, aname, sch))
             area_ids[aname] = cur.lastrowid
 
-        # Inserción de todo el personal provisto en la imagen
         personal_data = [
             ("1020423063", "ADRIANA MARÍA GARCÍA ATENCIA", "Administración"),
             ("43928418", "CINDY YULIANA MEJIA SALAZAR", "Administración"),
@@ -93,12 +90,10 @@ def init_db():
             cur = c.execute("INSERT INTO employees(company_id,site_id,schedule_id,area_id,name,document,position) VALUES(?,?,?,?,?,?,?)", 
                             (co, site, sch, aid, nombre, pwd, area_name))
             eid = cur.lastrowid
-            # Usuario para login: primer nombre en minúscula o un identificador único limpio
             username = nombre.split()[0].lower() + "_" + pwd[-4:]
             c.execute("INSERT INTO users(company_id,employee_id,username,password_hash,role) VALUES(?,?,?,?,?)", 
                       (co, eid, username, hashpw(pwd), "empleado"))
 
-        # Usuario administrador con contraseña OMMA2016
         c.execute("INSERT INTO users(company_id,username,password_hash,role) VALUES(?,?,?,?)", (co, "admin", hashpw("OMMA2016"), "administrador"))
     c.commit(); c.close()
 
@@ -163,12 +158,12 @@ INDEX_HTML = """
                     <div id="login-error" class="alert alert-danger d-none"></div>
                     <form onsubmit="doLogin(event)">
                         <div class="mb-3">
-                            <label class="form-label">Seleccione o busque su nombre:</label>
-                            <input type="text" id="emp-search" class="form-control mb-2" placeholder="Escriba para filtrar nombre..." oninput="filterEmployees()">
-                            <select id="user_id" class="form-select" size="5" required style="font-size: 14px;">
-                                <option value="admin">Admin (Administrador)</option>
-                                ${employees.map(e => `<option value="emp_${e.id}">${e.name} (${e.area_name || 'Sin área'})</option>`).join('')}
-                            </select>
+                            <label class="form-label">Escriba su nombre o área:</label>
+                            <input type="text" id="emp-search" class="form-control" list="employees-list" placeholder="Comience a escribir..." autocomplete="off" required>
+                            <datalist id="employees-list">
+                                <option value="Admin (Administrador)">
+                                ${employees.map(e => `<option value="${e.name} (${e.area_name || 'Sin área'})">`).join('')}
+                            </datalist>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Contraseña (Su Cédula o Clave Admin)</label>
@@ -181,30 +176,22 @@ INDEX_HTML = """
         window.allEmployees = employees;
     }
 
-    function filterEmployees() {
-        let query = document.getElementById('emp-search').value.toLowerCase();
-        let select = document.getElementById('user_id');
-        let html = `<option value="admin">Admin (Administrador)</option>`;
-        window.allEmployees.forEach(e => {
-            if (e.name.toLowerCase().includes(query)) {
-                html += `<option value="emp_${e.id}">${e.name} (${e.area_name || 'Sin área'})</option>`;
-            }
-        });
-        select.innerHTML = html;
-    }
-
     async function doLogin(e) {
         e.preventDefault();
-        let selection = document.getElementById('user_id').value;
+        let val = document.getElementById('emp-search').value.trim();
         let p = document.getElementById('password').value;
         let username = "";
         
-        if (selection === 'admin') {
+        if (val === "Admin (Administrador)") {
             username = 'admin';
         } else {
-            let empId = selection.replace('emp_', '');
-            let emp = window.allEmployees.find(x => x.id == empId);
-            if (emp) username = emp.username;
+            let emp = window.allEmployees.find(x => `${x.name} (${x.area_name || 'Sin área'})` === val || x.name.toLowerCase() === val.toLowerCase());
+            if (emp) {
+                username = emp.username;
+            } else {
+                let partial = window.allEmployees.find(x => val.toUpperCase().includes(x.name.toUpperCase()));
+                if (partial) username = partial.username;
+            }
         }
 
         let res = await fetch('/api/login', {
