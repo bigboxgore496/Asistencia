@@ -144,7 +144,7 @@ def init_db():
         ("8027635", "CARLOS ALBERTO TORRES MUÑOZ", "Logistica"),
         ("1026140232", "WILLMAR ANDRES VARGAS RAIGOZA", "Logistica"),
         ("79829313", "WILMER ANDRES URIBE PACHECO", "Logistica"),
-        ("1035861508", "ANTONY WEPES HOYOS", "Produccion"),
+        ("1035861508", "ANTONY YEPES HOYOS", "Produccion"),
         ("1017147274", "CRISTIAN ALEXIS RIVERA MUÑOZ", "Produccion"),
         ("1017150704", "DANIEL STIVENS JIMENEZ ZULUAGA", "Produccion"),
         ("1000641073", "DIEGO ALEJANDRO CARRILLO POSADA", "Produccion"),
@@ -315,8 +315,9 @@ INDEX_HTML = """
                     <div id="login-error" class="alert alert-danger d-none"></div>
                     <form onsubmit="doLogin(event)">
                         <div class="mb-3">
-                            <label class="form-label">Usuario</label>
-                            <input type="text" id="emp-search" class="form-control" placeholder="Ingrese su usuario..." autocomplete="off" required>
+                            <label class="form-label">Usuario, Nombre o Cédula</label>
+                            <input type="text" id="emp-search" class="form-control" placeholder="Escriba para autocompletar..." autocomplete="off" list="employees-datalist" required>
+                            <datalist id="employees-datalist"></datalist>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Contraseña</label>
@@ -326,6 +327,19 @@ INDEX_HTML = """
                     </form>
                 </div>
             </div>`;
+        
+        try {
+            let res = await fetch('/api/employees/list');
+            if (res.ok) {
+                let emps = await res.json();
+                let datalist = document.getElementById('employees-datalist');
+                if (datalist) {
+                    datalist.innerHTML = emps.map(e => `<option value="${e.name}">Usuario: ${e.username} | Área: ${e.area_name || 'N/A'}</option>`).join('');
+                }
+            }
+        } catch (e) {
+            console.error("No se pudo cargar la lista para autocompletar", e);
+        }
     }
 
     async function doLogin(e) {
@@ -528,6 +542,20 @@ def index():
   return render_template_string(INDEX_HTML)
 
 
+@app.get("/api/employees/list")
+def employees_list():
+  c = db()
+  rows = c.execute("""
+        SELECT e.id, e.name, u.username, ar.name as area_name 
+        FROM employees e 
+        JOIN users u ON u.employee_id = e.id 
+        LEFT JOIN areas ar ON ar.id = e.area_id 
+        ORDER BY e.name ASC
+    """).fetchall()
+  c.close()
+  return jsonify([dict(r) for r in rows])
+
+
 @app.post("/api/login")
 def login():
   d = request.json or {}
@@ -700,8 +728,6 @@ def mark():
     today_str = dt.date().isoformat()
 
     c = db()
-
-    # Validación de doble registro diario: verificar si ya existe un registro de este mismo tipo hoy
     existing_mark = c.execute(
         """SELECT id FROM attendance 
            WHERE employee_id = ? AND event_type = ? AND DATE(event_time) = ?""",
@@ -792,7 +818,6 @@ def mark():
     if not valid:
       status = f"{status} (Fuera de zona a {dist:.0f}m)"
 
-    # Inserción independiente del registro GPS para Entrada o Salida
     cur = c.execute(
         """INSERT INTO
         attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes,overtime_minutes,project_code)
@@ -855,18 +880,11 @@ def export_csv():
   rows = c.execute(
       """
         SELECT a.id, e.id as emp_id, e.name as employee_name, e.document, s.name as site_name, ar.name as area_name,
-               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code,
-               COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
-               COALESCE(ar_sch.wed, h.wed) wed, COALESCE(ar_sch.thu, h.thu) thu, 
-               COALESCE(ar_sch.fri, h.fri) fri, COALESCE(ar_sch.sat, h.sat) sat, 
-               COALESCE(ar_sch.sun, h.sun) sun,
-               COALESCE(ar_sch.tolerance_minutes, h.tolerance_minutes) tolerance_minutes
+               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code
         FROM attendance a 
         JOIN employees e ON e.id = a.employee_id 
         LEFT JOIN sites s ON s.id = e.site_id 
-        LEFT JOIN schedules h ON h.id=e.schedule_id 
         LEFT JOIN areas ar ON ar.id = e.area_id
-        LEFT JOIN schedules ar_sch ON ar_sch.id=ar.schedule_id
         WHERE e.company_id = ? 
         ORDER BY a.event_time ASC
     """,
@@ -874,28 +892,8 @@ def export_csv():
   ).fetchall()
   c.close()
 
-  wb = openpyxl.Workbook()
-  ws = wb.active
-  ws.title = "Reporte Asistencia"
-
-  headers = [
-      "ID",
-      "Empleado",
-      "Documento",
-      "Area",
-      "Sede",
-      "Fecha",
-      "Tipo Registro",
-      "Hora",
-      "Codigo de Proyecto",
-      "Ubicacion Google Maps",
-      "Distancia (m)",
-      "Minutos Retardo",
-      "Total Extras",
-      "Estado",
-  ]
-  ws.append(headers)
-
+  # Agrupar registros por empleado y fecha para consolidar en una sola fila por día
+  daily_records = {}
   for r in rows:
     dt_str = r["event_time"]
     try:
@@ -906,40 +904,111 @@ def export_csv():
       except Exception:
         continue
 
-    date_str = dt_obj.strftime("%d-%b").lower()
-    time_str = dt_obj.strftime("%I:%M:%S %p").lower()
+    date_key = dt_obj.strftime("%Y-%m-%d")
+    emp_id = r["emp_id"]
+    key = (emp_id, date_key)
 
-    lat = r["latitude"]
-    lon = r["longitude"]
-    location_field = ""
-    if lat is not None and lon is not None:
+    if key not in daily_records:
+      daily_records[key] = {
+          "employee_name": r["employee_name"],
+          "document": r["document"],
+          "area_name": r["area_name"],
+          "site_name": r["site_name"],
+          "date": dt_obj.strftime("%d-%b-%Y").lower(),
+          "entrada": None,
+          "salida": None,
+      }
+
+    event_info = {
+        "time": dt_obj.strftime("%I:%M:%S %p").lower(),
+        "lat": r["latitude"],
+        "lon": r["longitude"],
+        "distance": r["distance_m"],
+        "status": r["status"],
+        "late": r["late_minutes"],
+        "overtime": r["overtime_minutes"],
+        "project_code": r["project_code"],
+    }
+
+    if r["event_type"] == "Entrada":
+      daily_records[key]["entrada"] = event_info
+    elif r["event_type"] == "Salida":
+      daily_records[key]["salida"] = event_info
+
+  wb = openpyxl.Workbook()
+  ws = wb.active
+  ws.title = "Reporte Asistencia"
+
+  headers = [
+      "Empleado",
+      "Documento",
+      "Área",
+      "Sede",
+      "Fecha",
+      "Entrada - Hora",
+      "Entrada - GPS",
+      "Entrada - Distancia (m)",
+      "Entrada - Estado",
+      "Salida - Hora",
+      "Salida - GPS",
+      "Salida - Distancia (m)",
+      "Salida - Proyecto",
+      "Salida - Estado",
+      "Minutos Retardo",
+      "Total Extras",
+  ]
+  ws.append(headers)
+
+  for key, rec in sorted(
+      daily_records.items(), key=lambda x: (x[0][1], x[1]["employee_name"])
+  ):
+    ent = rec["entrada"] or {}
+    sal = rec["salida"] or {}
+
+    ent_maps = ""
+    if ent.get("lat") is not None and ent.get("lon") is not None:
       try:
-        maps_url = f"https://www.google.com/maps?q={float(lat)},{float(lon)}"
-        location_field = f'=HYPERLINK("{maps_url}", "Ver en Mapa")'
+        ent_maps = (
+            f'=HYPERLINK("https://www.google.com/maps?q={float(ent["lat"])},'
+            f'{float(ent["lon"])}", "Ver Entrada")'
+        )
       except Exception:
         pass
 
-    distance_val = (
-        int(round(r["distance_m"])) if r["distance_m"] is not None else ""
+    sal_maps = ""
+    if sal.get("lat") is not None and sal.get("lon") is not None:
+      try:
+        sal_maps = (
+            f'=HYPERLINK("https://www.google.com/maps?q={float(sal["lat"])},'
+            f'{float(sal["lon"])}", "Ver Salida")'
+        )
+      except Exception:
+        pass
+
+    ent_dist = (
+        int(round(ent["distance"])) if ent.get("distance") is not None else ""
     )
-    late_val = int(r["late_minutes"] or 0)
-    overtime_val = int(r["overtime_minutes"] or 0)
+    sal_dist = (
+        int(round(sal["distance"])) if sal.get("distance") is not None else ""
+    )
 
     row_data = [
-        int(r["id"]),
-        r["employee_name"],
-        str(r["document"] or ""),
-        r["area_name"] or "",
-        r["site_name"] or "",
-        date_str,
-        r["event_type"],
-        time_str,
-        r["project_code"] or "",
-        location_field,
-        distance_val,
-        late_val,
-        overtime_val,
-        r["status"] or "",
+        rec["employee_name"],
+        str(rec["document"] or ""),
+        rec["area_name"] or "",
+        rec["site_name"] or "",
+        rec["date"],
+        ent.get("time", ""),
+        ent_maps,
+        ent_dist,
+        ent.get("status", ""),
+        sal.get("time", ""),
+        sal_maps,
+        sal_dist,
+        sal.get("project_code", ""),
+        sal.get("status", ""),
+        int(ent.get("late", 0) or 0),
+        int(sal.get("overtime", 0) or 0),
     ]
     ws.append(row_data)
 
