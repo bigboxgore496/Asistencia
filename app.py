@@ -174,13 +174,24 @@ def current_user():
   if not uid:
     return None
   c = db()
-  u = c.execute("SELECT * FROM users WHERE id=? AND active=1", (uid,)).fetchone()
+  u = c.execute(
+      """
+        SELECT u.*, e.name as employee_name, e.document 
+        FROM users u 
+        LEFT JOIN employees e ON e.id = u.employee_id 
+        WHERE u.id=? AND u.active=1
+    """,
+      (uid,),
+  ).fetchone()
   c.close()
-  if u and u["role"] == "administrador":
-    u_dict = dict(u)
+  if not u:
+    return None
+  u_dict = dict(u)
+  if u_dict["role"] == "administrador":
     u_dict["display_name"] = "Admin (Administrador)"
-    return u_dict
-  return dict(u) if u else None
+  else:
+    u_dict["display_name"] = u_dict["employee_name"] or u_dict["username"]
+  return u_dict
 
 
 def hav(lat1, lon1, lat2, lon2):
@@ -264,16 +275,16 @@ INDEX_HTML = """
                     <div id="login-error" class="alert alert-danger d-none"></div>
                     <form onsubmit="doLogin(event)">
                         <div class="mb-3">
-                            <label class="form-label">Usuario o Nombre</label>
-                            <input type="text" id="emp-search" class="form-control" list="employees-list" placeholder="Ingrese su nombre o usuario..." autocomplete="off" required>
+                            <label class="form-label">Nombre del Empleado o Usuario</label>
+                            <input type="text" id="emp-search" class="form-control" list="employees-list" placeholder="Seleccione o escriba su nombre..." autocomplete="off" required>
                             <datalist id="employees-list">
                                 <option value="admin">
                                 ${employees.map(e => `<option value="${e.name}">`).join('')}
                             </datalist>
                         </div>
                         <div class="mb-3">
-                            <label class="form-label">Contraseña (Número de Documento)</label>
-                            <input type="password" id="password" class="form-control" placeholder="Ingrese su contraseña..." required>
+                            <label class="form-label">Contraseña (Número de Cédula)</label>
+                            <input type="password" id="password" class="form-control" placeholder="Ingrese su número de cédula..." required>
                         </div>
                         <button type="submit" class="btn btn-dark w-100">Ingresar</button>
                     </form>
@@ -309,8 +320,7 @@ INDEX_HTML = """
     }
 
     function renderDashboard(data) {
-        let role = data.user.role;
-        let displayName = role === 'administrador' ? 'Admin (Administrador)' : data.user.username;
+        let displayName = data.user.display_name || data.user.username;
         document.getElementById('user-nav').innerHTML = `<span>${displayName}</span> <button class="btn btn-outline-light btn-sm ms-3" onclick="doLogout()">Cerrar sesión</button>`;
         
         let html = `
@@ -319,7 +329,7 @@ INDEX_HTML = """
                 <p class="text-muted">Sistema de control de asistencia con validación GPS y áreas (Horario fijo: Lunes a Sábado de 7:00 AM a 3:00 PM).</p>
             </div>`;
 
-        if (role === 'empleado') {
+        if (data.user.role === 'empleado') {
             html += `
                 <div class="card p-4 shadow-sm text-center">
                     <h3>Registrar Asistencia</h3>
@@ -477,7 +487,7 @@ def login():
   p_hash = hashpw(p)
   c = db()
 
-  # Búsqueda robusta permitiendo usuario, nombre completo o cédula
+  # Permite buscar por nombre completo, nombre de usuario o cédula
   row = c.execute(
       """
         SELECT u.* FROM users u 
@@ -485,7 +495,7 @@ def login():
         WHERE (lower(u.username) = ? OR lower(e.name) = ? OR e.document = ?) 
           AND u.password_hash = ? AND u.active = 1
     """,
-      (login_input, login_input, p, p_hash),
+      (login_input, login_input, login_input, p_hash),
   ).fetchone()
   c.close()
 
