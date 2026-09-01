@@ -831,16 +831,15 @@ def export_csv():
   for key, r in daily_records.items():
     lat = r["lat"]
     lon = r["lon"]
+    location_field = ""
     if lat is not None and lon is not None:
       try:
         maps_url = f"https://www.google.com/maps?q={float(lat)},{float(lon)}"
-        location_field = f'=HYPERLINK("{maps_url}"; "Ver en Mapa")'
+        location_field = f'=HYPERLINK("{maps_url}", "Ver en Mapa")'
       except Exception:
-        location_field = ""
-    else:
-      location_field = ""
+        pass
 
-    ws.append([
+    row_data = [
         r["id"],
         r["employee_name"],
         r["document"],
@@ -853,7 +852,8 @@ def export_csv():
         f"{r['distance_m']:.0f}" if r["distance_m"] is not None else "",
         r["late_minutes"],
         r["total_extras"],
-    ])
+    ]
+    ws.append(row_data)
 
   file_stream = io.BytesIO()
   wb.save(file_stream)
