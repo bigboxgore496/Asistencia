@@ -269,7 +269,7 @@ INDEX_HTML = """
                     <div class="col-md-6">
                         <div class="card p-3 shadow-sm mb-4">
                             <h4>Reportes del Sistema</h4>
-                            <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia (Excel / CSV)</a>
+                            <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia Consolidado (Excel / CSV)</a>
                         </div>
                     </div>
                 </div>
@@ -541,39 +541,89 @@ def export_csv():
     
     c = db()
     rows = c.execute("""
-        SELECT a.id, e.name as employee_name, e.document, s.name as site_name, ar.name as area_name,
+        SELECT a.id, e.id as emp_id, e.name as employee_name, e.document, s.name as site_name, ar.name as area_name,
                a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes 
         FROM attendance a 
         JOIN employees e ON e.id = a.employee_id 
         LEFT JOIN sites s ON s.id = e.site_id 
         LEFT JOIN areas ar ON ar.id = e.area_id
         WHERE e.company_id = ? 
-        ORDER BY a.id DESC
+        ORDER BY a.event_time ASC
     """, (u["company_id"],)).fetchall()
     c.close()
     
+    # Agrupar por empleado y por día (YYYY-MM-DD)
+    daily_records = {}
+    for r in rows:
+        dt_str = r["event_time"]
+        try:
+            dt_obj = datetime.fromisoformat(dt_str)
+        except Exception:
+            try:
+                dt_obj = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                continue
+        
+        day_date = dt_obj.strftime("%Y-%m-%d")
+        emp_key = (r["emp_id"], day_date)
+        
+        if emp_key not in daily_records:
+            daily_records[emp_key] = {
+                "id": r["id"],
+                "employee_name": r["employee_name"],
+                "document": r["document"],
+                "area_name": r["area_name"] or "",
+                "site_name": r["site_name"] or "",
+                "date": dt_obj.strftime("%d-%b").lower(),
+                "entrada_time": "",
+                "salida_time": "",
+                "lat": r["latitude"],
+                "lon": r["longitude"],
+                "distance_m": r["distance_m"],
+                "late_minutes": 0,
+                "total_extras": 0
+            }
+        
+        rec = daily_records[emp_key]
+        time_formatted = dt_obj.strftime("%I:%M:%S %p").lower()
+        
+        if r["event_type"] == "Entrada":
+            rec["entrada_time"] = time_formatted
+            rec["late_minutes"] = r["late_minutes"] or 0
+            if r["latitude"] is not None:
+                rec["lat"] = r["latitude"]
+                rec["lon"] = r["longitude"]
+                rec["distance_m"] = r["distance_m"]
+        elif r["event_type"] == "Salida":
+            rec["salida_time"] = time_formatted
+            # Calcular extras o leer si aplica
+            if r["latitude"] is not None and rec["lat"] is None:
+                rec["lat"] = r["latitude"]
+                rec["lon"] = r["longitude"]
+                rec["distance_m"] = r["distance_m"]
+
     si = io.StringIO()
     cw = csv.writer(si)
-    cw.writerow(["ID", "Empleado", "Documento", "Área", "Sede", "Evento", "Fecha y Hora", "Ubicación Google Maps", "Distancia (m)", "Estado", "Minutos Retardo"])
+    cw.writerow(["ID", "Empleado", "Documento", "Area", "Sede", "Fecha", "Hora de ingreso", "Hora de Salida", "Ubicacion Google Maps", "Distancia (m)", "Minutos Retardo", "Total Extras"])
     
-    for r in rows:
-        lat = r["latitude"]
-        lon = r["longitude"]
+    for key, r in daily_records.items():
+        lat = r["lat"]
+        lon = r["lon"]
         if lat is not None and lon is not None:
             maps_url = f"https://www.google.com/maps?q={lat},{lon}"
             location_field = f'=HIPERVINCULO("{maps_url}"; "Ver en Mapa ({lat:.5f}, {lon:.5f})")'
         else:
-            location_field = "Sin GPS"
+            location_field = ""
 
         cw.writerow([
-            r["id"], r["employee_name"], r["document"], r["area_name"] or "", r["site_name"], 
-            r["event_type"], r["event_time"], location_field, 
-            f"{r['distance_m']:.1f}" if r["distance_m"] is not None else "", 
-            r["status"], r["late_minutes"]
+            r["id"], r["employee_name"], r["document"], r["area_name"], r["site_name"], 
+            r["date"], r["entrada_time"], r["salida_time"], location_field, 
+            f"{r['distance_m']:.0f}" if r["distance_m"] is not None else "", 
+            r["late_minutes"], r["total_extras"]
         ])
     
     output = make_response(si.getvalue())
-    output.headers["Content-Disposition"] = "attachment; filename=reporte_asistencia.csv"
+    output.headers["Content-Disposition"] = "attachment; filename=reporte_asistencia_consolidado.csv"
     output.headers["Content-type"] = "text/csv; charset=utf-8"
     return output
 
