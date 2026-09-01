@@ -287,21 +287,10 @@ INDEX_HTML = """
         let inputVal = document.getElementById('emp-search').value.trim();
         let p = document.getElementById('password').value.trim();
 
-        let username = inputVal;
-        if (inputVal.toLowerCase() !== 'admin' && window.allEmployees && window.allEmployees.length > 0) {
-            let found = window.allEmployees.find(emp => 
-                emp.name.toLowerCase() === inputVal.toLowerCase() || 
-                (emp.username && emp.username.toLowerCase() === inputVal.toLowerCase())
-            );
-            if (found && found.username) {
-                username = found.username;
-            }
-        }
-
         let res = await fetch('/api/login', {
             method: 'POST', 
             headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({username: username, password: p})
+            body: JSON.stringify({username: inputVal, password: p})
         });
         
         if (res.ok) { 
@@ -483,15 +472,23 @@ def employees_list():
 @app.post("/api/login")
 def login():
   d = request.json or {}
-  u = (d.get("username") or "").strip().lower()
+  login_input = (d.get("username") or "").strip().lower()
   p = d.get("password") or ""
+  p_hash = hashpw(p)
   c = db()
+
+  # Búsqueda robusta permitiendo usuario, nombre completo o cédula
   row = c.execute(
-      "SELECT * FROM users WHERE lower(username)=? AND password_hash=? AND"
-      " active=1",
-      (u, hashpw(p)),
+      """
+        SELECT u.* FROM users u 
+        LEFT JOIN employees e ON e.id = u.employee_id
+        WHERE (lower(u.username) = ? OR lower(e.name) = ? OR e.document = ?) 
+          AND u.password_hash = ? AND u.active = 1
+    """,
+      (login_input, login_input, p, p_hash),
   ).fetchone()
   c.close()
+
   if not row:
     return jsonify(error="Usuario o contraseña incorrectos"), 401
   session["uid"] = row["id"]
@@ -891,7 +888,7 @@ def export_csv():
         r["site_name"],
         r["date"],
         r["entrada_time"],
-        r["salyd_time"] if "salyd_time" in r else r["salida_time"],
+        r["salida_time"],
         r["project_code"],
         location_field,
         f"{r['distance_m']:.0f}" if r["distance_m"] is not None else "",
