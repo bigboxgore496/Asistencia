@@ -442,7 +442,7 @@ INDEX_HTML = """
         
         let projectCode = '';
         if (type === 'Salida') {
-            let inputCode = prompt('Ingrese el Código del Proyecto (Formato: 2 letras y 3 números, Ej: DA 149):', '');
+            let inputCode = prompt('Ingrese el Código del o los Proyectos en los que Laboró Ej: DA 149', '');
             if (inputCode === null) return; // Cancelado
             projectCode = inputCode.trim().toUpperCase();
             let regex = /^[A-Z]{2}\s?\d{3}$/;
