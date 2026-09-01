@@ -89,6 +89,21 @@
             init();
         }
 
+        async function registrarAsistencia(eventType) {
+            const res = await fetch('/api/attendance', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ event_type: eventType })
+            });
+            if (res.ok) {
+                alert('¡Asistencia registrada con éxito!');
+                loadState();
+            } else {
+                const err = await res.json();
+                alert(err.error || 'Error al registrar asistencia');
+            }
+        }
+
         function renderDashboard() {
             const u = stateData.user;
             document.getElementById('user-info').innerHTML = `
@@ -97,7 +112,7 @@
             `;
 
             let html = `<div class="card shadow-sm p-4 mb-4">
-                <h3>Panel de Control - ${stateData.companies[0]?.name || ''}</h3>
+                <h3>Panel de Control - ${stateData.companies[0]?.name || 'Empresa'}</h3>
                 <p class="text-muted">Bienvenido al sistema de control de asistencia.</p>
             </div>`;
 
@@ -121,6 +136,16 @@
                         </div>
                     </div>
                 </div>`;
+            } else {
+                html += `
+                <div class="card shadow-sm p-4 mb-4 text-center bg-white">
+                    <h4>Registro de Asistencia</h4>
+                    <p class="text-muted">Haga clic en el botón correspondiente para marcar su jornada.</p>
+                    <div class="d-flex justify-content-center gap-3 mt-3">
+                        <button onclick="registrarAsistencia('entrada')" class="btn btn-success btn-lg px-4">Registrar Entrada</button>
+                        <button onclick="registrarAsistencia('salida')" class="btn btn-danger btn-lg px-4">Registrar Salida</button>
+                    </div>
+                </div>`;
             }
 
             html += `
@@ -130,7 +155,7 @@
                     <table class="table table-striped">
                         <thead><tr><th>Empleado</th><th>Evento</th><th>Hora</th><th>Estado</th></tr></thead>
                         <tbody>
-                            ${stateData.attendance.map(a => `<tr><td>${a.employee_name}</td><td>${a.event_type}</td><td>${a.event_time}</td><td><span class="badge bg-success">${a.status}</span></td></tr>`).join('')}
+                            ${stateData.attendance && stateData.attendance.length > 0 ? stateData.attendance.map(a => `<tr><td>${a.employee_name}</td><td>${a.event_type}</td><td>${a.event_time}</td><td><span class="badge bg-success">${a.status}</span></td></tr>`).join('') : '<tr><td colspan="4" class="text-center text-muted">No hay registros recientes</td></tr>'}
                         </tbody>
                     </table>
                 </div>
@@ -140,11 +165,6 @@
         }
 
         document.addEventListener('DOMContentLoaded', init);
-    </script>
-</body>
-</html>
-
-        document.addEventListener('DOMContentLoaded', render);
     </script>
 </body>
 </html>
