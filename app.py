@@ -2,10 +2,12 @@ from flask import Flask, request, jsonify, render_template_string, session, make
 import sqlite3, math, hashlib, secrets, csv, io, gspread
 from pathlib import Path
 from datetime import datetime
+from zoneinfo import ZoneInfo
 
 app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 DB = Path(__file__).with_name("asistencia.db")
+COLOMBIA_TZ = ZoneInfo("America/Bogota")
 
 def db():
     c = sqlite3.connect(DB); c.row_factory = sqlite3.Row
@@ -210,7 +212,7 @@ INDEX_HTML = """
         let html = `
             <div class="card p-4 shadow-sm mb-4">
                 <h2>Panel de Control - Omma Group</h2>
-                <p class="text-muted">Sistema de control de asistencia con validación GPS y áreas.</p>
+                <p class="text-muted">Sistema de control de asistencia con validación GPS y áreas (Hora Colombia).</p>
             </div>`;
 
         if (role === 'empleado') {
@@ -474,13 +476,17 @@ def mark():
             except Exception as e:
                 print(f"Aviso cálculo GPS: {e}")
 
-        dt = datetime.now()
+        # Obtener la hora actual exacta ajustada a la zona horaria de Colombia (America/Bogota)
+        dt = datetime.now(COLOMBIA_TZ)
         status = "Registrada"
         late = 0
         
         if typ == "Entrada":
             days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-            period = row[days[dt.weekday()]] if days[dt.weekday()] in row.keys() else ""
+            period = row[days[dt.weekday()]] if days[days[dt.weekday()]] in row.keys() else "" # Nota: dt.weekday() devuelve 0-6
+            # Ajuste seguro para lectura del día de la semana
+            day_key = days[dt.weekday()]
+            period = row[day_key] if day_key in row.keys() else ""
             if period:
                 start = int(period[:2]) * 60 + int(period[3:5])
                 actual = dt.hour * 60 + dt.minute
