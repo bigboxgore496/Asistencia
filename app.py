@@ -230,25 +230,42 @@ INDEX_HTML = """
                     <div id="mark-result" class="mt-3"></div>
                 </div>`;
         } else {
+            window.areasData = data.areas;
             html += `
                 <div class="row">
                     <div class="col-md-6">
                         <div class="card p-3 shadow-sm mb-4">
                             <h4>Configuración de Horarios de Áreas</h4>
-                            <form onsubmit="saveAreaSchedule(event)" class="mb-3">
-                                <div class="mb-2">
-                                    <label>Área</label>
-                                    <select id="area-select" class="form-select" required>
-                                        ${data.areas.map(a => `<option value="${a.id}">${a.name} (${a.schedule_name || 'Sin asignar'})</option>`).join('')}
+                            <form onsubmit="saveAreaScheduleCustom(event)" class="mb-3">
+                                <div class="mb-3">
+                                    <label class="form-label">Área</label>
+                                    <select id="config-area-id" class="form-select" onchange="onAreaChange()" required>
+                                        ${data.areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
                                     </select>
                                 </div>
-                                <div class="mb-2">
-                                    <label>Horario (Lunes a Sábado)</label>
-                                    <select id="schedule-select" class="form-select" required>
-                                        ${data.schedules.map(s => `<option value="${s.id}">${s.name} (${s.mon || 'Sin horario'})</option>`).join('')}
-                                    </select>
+                                <div class="mb-3">
+                                    <label class="form-label">Días Hábiles (L M M J V S D)</label>
+                                    <div class="d-flex justify-content-between gap-1">
+                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="mon" id="chk-mon" checked><label class="form-check-label" for="chk-mon">L</label></div>
+                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="tue" id="chk-tue" checked><label class="form-check-label" for="chk-tue">M</label></div>
+                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="wed" id="chk-wed" checked><label class="form-check-label" for="chk-wed">M</label></div>
+                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="thu" id="chk-thu" checked><label class="form-check-label" for="chk-thu">J</label></div>
+                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="fri" id="chk-fri" checked><label class="form-check-label" for="chk-fri">V</label></div>
+                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="sat" id="chk-sat" checked><label class="form-check-label" for="chk-sat">S</label></div>
+                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="sun" id="chk-sun"><label class="form-check-label" for="chk-sun">D</label></div>
+                                    </div>
                                 </div>
-                                <button type="submit" class="btn btn-primary btn-sm">Asignar Horario a Área</button>
+                                <div class="row mb-3">
+                                    <div class="col-6">
+                                        <label class="form-label">Hora Entrada</label>
+                                        <input type="time" id="config-time-start" class="form-control" value="07:00" required>
+                                    </div>
+                                    <div class="col-6">
+                                        <label class="form-label">Hora Salida</label>
+                                        <input type="time" id="config-time-end" class="form-control" value="15:00" required>
+                                    </div>
+                                </div>
+                                <button type="submit" class="btn btn-primary w-100">Guardar y Configurar Horario</button>
                             </form>
                         </div>
                     </div>
@@ -275,8 +292,49 @@ INDEX_HTML = """
                             </li>`).join('')}
                     </ul>
                 </div>`;
+            setTimeout(onAreaChange, 100);
         }
         document.getElementById('app-container').innerHTML = html;
+    }
+
+    function onAreaChange() {
+        let areaId = document.getElementById('config-area-id').value;
+        let area = window.areasData.find(a => a.id == areaId);
+        if (area) {
+            ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].forEach(d => {
+                let val = area[d] || '';
+                let chk = document.getElementById(`chk-${d}`);
+                if (chk) chk.checked = (val !== '');
+            });
+            // Tomar la hora del primer día configurado si existe
+            let firstActive = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(d => area[d]).find(v => v && v.includes('-'));
+            if (firstActive) {
+                let parts = firstActive.split('-');
+                document.getElementById('config-time-start').value = parts[0] || '07:00';
+                document.getElementById('config-time-end').value = parts[1] || '15:00';
+            }
+        }
+    }
+
+    async function saveAreaScheduleCustom(e) {
+        e.preventDefault();
+        let areaId = document.getElementById('config-area-id').value;
+        let tStart = document.getElementById('config-time-start').value;
+        let tEnd = document.getElementById('config-time-end').value;
+        let rangeStr = `${tStart}-${tEnd}`;
+
+        let daysData = {};
+        ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].forEach(d => {
+            let chk = document.getElementById(`chk-${d}`);
+            daysData[d] = chk && chk.checked ? rangeStr : '';
+        });
+
+        let res = await fetch('/api/area/schedule/custom', {
+            method: 'POST', headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({area_id: areaId, ...daysData, name: `Horario ${tStart} - ${tEnd}`})
+        });
+        if (res.ok) { alert('Horario configurado y guardado con éxito'); loadState(); }
+        else { alert('Error al guardar el horario'); }
     }
 
     async function markAttendance(type) {
@@ -295,18 +353,6 @@ INDEX_HTML = """
                 document.getElementById('mark-result').innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
             }
         }, err => { alert('Error obteniendo GPS: ' + err.message); });
-    }
-
-    async function saveAreaSchedule(e) {
-        e.preventDefault();
-        let areaId = document.getElementById('area-select').value;
-        let scheduleId = document.getElementById('schedule-select').value;
-        let res = await fetch('/api/area/schedule', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({area_id: areaId, schedule_id: scheduleId})
-        });
-        if (res.ok) { alert('Horario actualizado con éxito'); loadState(); }
-        else { alert('Error al actualizar'); }
     }
 
     loadState();
@@ -355,19 +401,40 @@ def state():
     companies = [dict(x) for x in c.execute("SELECT * FROM companies WHERE id=?", (cid,))]
     sites = [dict(x) for x in c.execute("SELECT * FROM sites WHERE company_id=?", (cid,))]
     schedules = [dict(x) for x in c.execute("SELECT * FROM schedules WHERE company_id=?", (cid,))]
-    areas = [dict(x) for x in c.execute("""SELECT a.*, s.name schedule_name FROM areas a LEFT JOIN schedules s ON s.id=a.schedule_id WHERE a.company_id=?""", (cid,))]
+    areas = [dict(x) for x in c.execute("""
+        SELECT a.*, s.name schedule_name, s.mon, s.tue, s.wed, s.thu, s.fri, s.sat, s.sun 
+        FROM areas a LEFT JOIN schedules s ON s.id=a.schedule_id WHERE a.company_id=?
+    """, (cid,))]
     employees = [dict(x) for x in c.execute("""SELECT e.*,s.name site_name,h.name schedule_name, ar.name area_name FROM employees e LEFT JOIN sites s ON s.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id LEFT JOIN areas ar ON ar.id=e.area_id WHERE e.company_id=? ORDER BY e.name ASC""", (cid,))]
     attendance = [dict(x) for x in c.execute("""SELECT a.*,e.name employee_name FROM attendance a JOIN employees e ON e.id=a.employee_id WHERE e.company_id=? ORDER BY a.id DESC LIMIT 100""", (cid,))]
     incidents = [dict(x) for x in c.execute("""SELECT i.*,e.name employee_name FROM incidents i JOIN employees e ON e.id=i.employee_id WHERE e.company_id=? ORDER BY i.id DESC""", (cid,))]
     c.close(); return jsonify(companies=companies, sites=sites, schedules=schedules, areas=areas, employees=employees, attendance=attendance, incidents=incidents, user=u)
 
-@app.post("/api/area/schedule")
-def area_schedule():
+@app.post("/api/area/schedule/custom")
+def area_schedule_custom():
     u = current_user()
     if not u or u["role"] != "administrador": return jsonify(error="No autorizado"), 403
     d = request.json or {}
+    area_id = d.get("area_id")
+    name = d.get("name", "Horario Personalizado")
+    mon = d.get("mon", "")
+    tue = d.get("tue", "")
+    wed = d.get("wed", "")
+    thu = d.get("thu", "")
+    fri = d.get("fri", "")
+    sat = d.get("sat", "")
+    sun = d.get("sun", "")
+
     c = db()
-    c.execute("UPDATE areas SET schedule_id=? WHERE id=? AND company_id=?", (d.get("schedule_id"), d.get("area_id"), u["company_id"]))
+    # Crear un nuevo registro de horario para el área
+    cur = c.execute("""
+        INSERT INTO schedules(company_id, name, mon, tue, wed, thu, fri, sat, sun, lunch_start, lunch_end, break_minutes, tolerance_minutes)
+        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, '12:00', '13:00', 60, 10)
+    """, (u["company_id"], name, mon, tue, wed, thu, fri, sat, sun))
+    new_sch_id = cur.lastrowid
+
+    # Actualizar el área con este nuevo horario
+    c.execute("UPDATE areas SET schedule_id=? WHERE id=? AND company_id=?", (new_sch_id, area_id, u["company_id"]))
     c.commit(); c.close()
     return jsonify(ok=True)
 
