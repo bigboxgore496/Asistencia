@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, date
 import hashlib
 import io
 import math
@@ -77,7 +77,14 @@ def init_db():
         " VALUES(?,?,?,?,?)",
         (co, "Sede Principal", 6.214110727151654, -75.58268995990919, 200),
     )
-    site = cur.lastrowid
+    site_principal = cur.lastrowid
+
+    cur = c.execute(
+        "INSERT INTO sites(company_id,name,latitude,longitude,radius_m)"
+        " VALUES(?,?,?,?,?)",
+        (co, "Los Del Roble", 6.2000000, -75.5700000, 200),
+    )
+    site_roble = cur.lastrowid
 
     cur = c.execute(
         """INSERT INTO
@@ -160,13 +167,14 @@ def init_db():
         ("71338768", "FREDY ALEXANDER GUISAO OQUENDO", "Servicios"),
     ]
 
-    for pwd, nombre, area_name in personal_data:
+    for idx, (pwd, nombre, area_name) in enumerate(personal_data):
       aid = area_ids.get(area_name)
+      chosen_site = site_roble if idx % 5 == 0 else site_principal
       cur = c.execute(
           "INSERT INTO"
           " employees(company_id,site_id,schedule_id,area_id,name,document,position)"
           " VALUES(?,?,?,?,?,?,?)",
-          (co, site, sch, aid, nombre, pwd, area_name),
+          (co, chosen_site, sch, aid, nombre, pwd, area_name),
       )
       eid = cur.lastrowid
       username = nombre.split()[0].lower() + "_" + pwd[-4:]
@@ -297,7 +305,6 @@ INDEX_HTML = """
     
     async function renderLogin() {
         document.getElementById('user-nav').innerHTML = '';
-
         document.getElementById('app-container').innerHTML = `
             <div class="row justify-content-center mt-5">
                 <div class="col-md-5 card p-4 shadow">
@@ -339,7 +346,6 @@ INDEX_HTML = """
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({username: inputVal, password: p, device_token: deviceToken})
             });
-            
             let data = await res.json();
 
             if (res.ok) { 
@@ -370,14 +376,14 @@ INDEX_HTML = """
         let html = `
             <div class="card p-4 shadow-sm mb-4">
                 <h2>Panel de Control - Omma Group</h2>
-                <p class="text-muted">Sistema de control de asistencia con validación GPS obligatoria y asociación estricta de dispositivo.</p>
+                <p class="text-muted">Control de doble registro de ubicación (Ingreso y Salida independientes con GPS).</p>
             </div>`;
 
         if (data.user.role === 'empleado') {
             html += `
                 <div class="card p-4 shadow-sm text-center">
-                    <h3>Registrar Asistencia</h3>
-                    <p class="text-muted">Marque su entrada o salida usando GPS (Radio 200m). Dispositivo vinculado de forma única.</p>
+                    <h3>Registro de Asistencia GPS</h3>
+                    <p class="text-muted">Debe realizar de forma independiente el registro de su <strong>Entrada</strong> y su <strong>Salida</strong> (Radio 200m).</p>
                     <div class="my-3">
                         <button class="btn btn-success btn-lg mx-2" onclick="markAttendance('Entrada')">Marcar Entrada</button>
                         <button class="btn btn-danger btn-lg mx-2" onclick="markAttendance('Salida')">Marcar Salida</button>
@@ -448,7 +454,7 @@ INDEX_HTML = """
         document.getElementById('emp-count-badge').innerText = filtered.length;
 
         if (filtered.length === 0) {
-            container.innerHTML = '<li class="list-group-item text-center text-muted">No se encontraron empleados con los filtros seleccionados</li>';
+            container.innerHTML = '<li class="list-group-item text-center text-muted">No se encontraron empleados</li>';
             return;
         }
 
@@ -467,7 +473,7 @@ INDEX_HTML = """
     }
 
     async function resetDevice(userId) {
-        if (!confirm('¿Está seguro de desvincular el dispositivo de este empleado para permitirle registrar uno nuevo?')) return;
+        if (!confirm('¿Está seguro de desvincular el dispositivo de este empleado?')) return;
         let res = await fetch(`/api/admin/reset-device/${userId}`, {method: 'POST'});
         if (res.ok) {
             alert('Dispositivo desvinculado con éxito.');
@@ -503,7 +509,7 @@ INDEX_HTML = """
             let data = await res.json();
             if (res.ok) {
                 let projText = projectCode ? ` | Proyecto: ${projectCode}` : '';
-                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">${type} registrada con ubicación GPS a las ${data.time}${projText} - Estado: ${data.status}</div>`;
+                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">Ubicación GPS registrada para ${type} a las ${data.time}${projText} - Estado: ${data.status}</div>`;
             } else {
                 document.getElementById('mark-result').innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
             }
@@ -520,20 +526,6 @@ INDEX_HTML = """
 @app.route("/")
 def index():
   return render_template_string(INDEX_HTML)
-
-
-@app.get("/api/employees/list")
-def employees_list():
-  c = db()
-  rows = c.execute("""
-        SELECT e.id, e.name, u.username, ar.name as area_name 
-        FROM employees e 
-        JOIN users u ON u.employee_id = e.id 
-        LEFT JOIN areas ar ON ar.id = e.area_id 
-        ORDER BY e.name ASC
-    """).fetchall()
-  c.close()
-  return jsonify([dict(r) for r in rows])
 
 
 @app.post("/api/login")
@@ -573,7 +565,6 @@ def login():
   if not matched_user:
     return jsonify(error="Usuario o contraseña incorrectos"), 401
 
-  # Validación de Asociación de Dispositivo para Empleados
   if matched_user["role"] == "empleado":
     c = db()
     if not matched_user["device_token"]:
@@ -589,7 +580,7 @@ def login():
       return jsonify(
           error=(
               "Este usuario está asociado a otro dispositivo móvil. Contacte"
-              " al administrador para desvincularlo."
+              " al administrador."
           )
       ), 403
     c.close()
@@ -614,14 +605,6 @@ def reset_device(user_id):
 def logout():
   session.clear()
   return jsonify(ok=True)
-
-
-@app.get("/api/me")
-def me():
-  u = current_user()
-  if not u:
-    return jsonify(authenticated=False)
-  return jsonify(authenticated=True, user=u)
 
 
 @app.get("/api/state")
@@ -713,7 +696,27 @@ def mark():
           error="El código de proyecto es obligatorio al marcar salida."
       ), 400
 
+    dt = datetime.now(COLOMBIA_TZ)
+    today_str = dt.date().isoformat()
+
     c = db()
+
+    # Validación de doble registro diario: verificar si ya existe un registro de este mismo tipo hoy
+    existing_mark = c.execute(
+        """SELECT id FROM attendance 
+           WHERE employee_id = ? AND event_type = ? AND DATE(event_time) = ?""",
+        (u["employee_id"], typ, today_str),
+    ).fetchone()
+
+    if existing_mark:
+      c.close()
+      return jsonify(
+          error=(
+              f"Ya ha registrado su ubicación de {typ} el día de hoy. No se"
+              " permiten registros duplicados del mismo evento."
+          )
+      ), 400
+
     row = c.execute(
         """SELECT e.*, si.latitude site_lat, si.longitude site_lon, si.radius_m, 
                             COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
@@ -729,9 +732,9 @@ def mark():
                             WHERE e.id=? AND e.company_id=?""",
         (u["employee_id"], u["company_id"]),
     ).fetchone()
-    c.close()
 
     if not row:
+      c.close()
       return jsonify(error="Empleado no encontrado"), 404
 
     dist = 0.0
@@ -750,7 +753,6 @@ def mark():
       except Exception as e:
         print(f"Aviso cálculo GPS: {e}")
 
-    dt = datetime.now(COLOMBIA_TZ)
     status = "Registrada"
     late = 0
     extra_mins = 0
@@ -768,7 +770,7 @@ def mark():
       else:
         h_late = late // 60
         m_late = late % 60
-        status = f"Retardo {late} min ({h_late} horas y {m_late} minutos.)"
+        status = f"Retardo {late} min ({h_late}h {m_late}m)"
 
     elif typ == "Salida" and period:
       end = int(period[6:8]) * 60 + int(period[9:11])
@@ -778,25 +780,19 @@ def mark():
         early_mins = abs(diff)
         h_early = early_mins // 60
         m_early = early_mins % 60
-        status = (
-            f"Salida anticipada {early_mins} min ({h_early} horas y"
-            f" {m_early} minutos antes.)"
-        )
+        status = f"Salida anticipada {early_mins} min ({h_early}h {m_early}m antes)"
       elif diff > 0:
         extra_mins = diff
         h_extra = extra_mins // 60
         m_extra = extra_mins % 60
-        status = (
-            f"Hora extra {extra_mins} min ({h_extra} horas y {m_extra}"
-            " minutos.)"
-        )
+        status = f"Hora extra {extra_mins} min ({h_extra}h {m_extra}m)"
       else:
         status = "A tiempo"
 
     if not valid:
       status = f"{status} (Fuera de zona a {dist:.0f}m)"
 
-    c = db()
+    # Inserción independiente del registro GPS para Entrada o Salida
     cur = c.execute(
         """INSERT INTO
         attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes,overtime_minutes,project_code)
