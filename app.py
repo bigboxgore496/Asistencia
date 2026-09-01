@@ -147,4 +147,8 @@ def mark():
     c=db(); cur=c.execute("""INSERT INTO attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes) VALUES(?,?,?,?,?,?,?,?,?)""",(u["employee_id"],typ,dt.isoformat(timespec="seconds"),lat,lon,dist,int(valid),status,late)); c.commit(); c.close()
     return jsonify(id=cur.lastrowid,time=dt.strftime("%H:%M"),status=status,gps_valid=valid,late_minutes=late)
 
-if __name__=="__main__": init_db(); app.run(host="0.0.0.0",port=5000,debug=True)
+# Inicializa la base de datos automáticamente al arrancar
+init_db()
+
+if __name__=="__main__": 
+    app.run(host="0.0.0.0",port=5000,debug=True)
