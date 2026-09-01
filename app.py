@@ -449,17 +449,17 @@ def mark():
         
         c = db()
         row = c.execute("""SELECT e.*, si.latitude site_lat, si.longitude site_lon, si.radius_m, 
-                             COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
-                             COALESCE(ar_sch.wed, h.wed) wed, COALESCE(ar_sch.thu, h.thu) thu, 
-                             COALESCE(ar_sch.fri, h.fri) fri, COALESCE(ar_sch.sat, h.sat) sat, 
-                             COALESCE(ar_sch.sun, h.sun) sun,
-                             COALESCE(ar_sch.tolerance_minutes, h.tolerance_minutes) tolerance_minutes
-                           FROM employees e
-                           LEFT JOIN sites si ON si.id=e.site_id 
-                           LEFT JOIN schedules h ON h.id=e.schedule_id 
-                           LEFT JOIN areas ar ON ar.id=e.area_id
-                           LEFT JOIN schedules ar_sch ON ar_sch.id=ar.schedule_id
-                           WHERE e.id=? AND e.company_id=?""", (u["employee_id"], u["company_id"])).fetchone()
+                            COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
+                            COALESCE(ar_sch.wed, h.wed) wed, COALESCE(ar_sch.thu, h.thu) thu, 
+                            COALESCE(ar_sch.fri, h.fri) fri, COALESCE(ar_sch.sat, h.sat) sat, 
+                            COALESCE(ar_sch.sun, h.sun) sun,
+                            COALESCE(ar_sch.tolerance_minutes, h.tolerance_minutes) tolerance_minutes
+                            FROM employees e
+                            LEFT JOIN sites si ON si.id=e.site_id 
+                            LEFT JOIN schedules h ON h.id=e.schedule_id 
+                            LEFT JOIN areas ar ON ar.id=e.area_id
+                            LEFT JOIN schedules ar_sch ON ar_sch.id=ar.schedule_id
+                            WHERE e.id=? AND e.company_id=?""", (u["employee_id"], u["company_id"])).fetchone()
         c.close()
         
         if not row: 
@@ -476,15 +476,12 @@ def mark():
             except Exception as e:
                 print(f"Aviso cálculo GPS: {e}")
 
-        # Obtener la hora actual exacta ajustada a la zona horaria de Colombia (America/Bogota)
         dt = datetime.now(COLOMBIA_TZ)
         status = "Registrada"
         late = 0
         
         if typ == "Entrada":
             days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-            period = row[days[dt.weekday()]] if days[days[dt.weekday()]] in row.keys() else "" # Nota: dt.weekday() devuelve 0-6
-            # Ajuste seguro para lectura del día de la semana
             day_key = days[dt.weekday()]
             period = row[day_key] if day_key in row.keys() else ""
             if period:
