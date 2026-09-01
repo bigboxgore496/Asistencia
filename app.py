@@ -1,4 +1,3 @@
-
 from flask import Flask, request, jsonify, render_template, session
 import sqlite3, math, hashlib, secrets
 from pathlib import Path
@@ -26,14 +25,20 @@ def init_db():
     CREATE TABLE IF NOT EXISTS incidents(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,type TEXT NOT NULL,start_date TEXT,end_date TEXT,notes TEXT,status TEXT DEFAULT 'Pendiente',FOREIGN KEY(employee_id) REFERENCES employees(id));
     """)
     if c.execute("SELECT COUNT(*) FROM companies").fetchone()[0]==0:
-        c.execute("INSERT INTO companies(name) VALUES(?)",("Empresa Demo S.A.S.",)); co=c.lastrowid
-        c.execute("INSERT INTO sites(company_id,name,latitude,longitude,radius_m) VALUES(?,?,?,?,?)",(co,6.2442,-75.5812,150,"Sede Principal")); site=c.lastrowid
-        c.execute("""INSERT INTO schedules(company_id,name,mon,tue,wed,thu,fri,sat,sun,lunch_start,lunch_end,break_minutes,tolerance_minutes)
-                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",(co,"Administrativo","07:00-17:00","07:00-17:00","07:00-17:00","07:00-17:00","07:00-13:00","","","13:00","14:00",30,10)); sch=c.lastrowid
+        cur = c.execute("INSERT INTO companies(name) VALUES(?)",("Empresa Demo S.A.S.",))
+        co = cur.lastrowid
+        
+        cur = c.execute("INSERT INTO sites(company_id,name,latitude,longitude,radius_m) VALUES(?,?,?,?,?)",(co,6.2442,-75.5812,150,"Sede Principal"))
+        site = cur.lastrowid
+        
+        cur = c.execute("""INSERT INTO schedules(company_id,name,mon,tue,wed,thu,fri,sat,sun,lunch_start,lunch_end,break_minutes,tolerance_minutes)
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",(co,"Administrativo","07:00-17:00","07:00-17:00","07:00-17:00","07:00-17:00","07:00-13:00","","","13:00","14:00",30,10))
+        sch = cur.lastrowid
+        
         demo=[("Carlos Rodríguez","1.234.567.890","Auxiliar Administrativo"),("María González","1.098.765.432","Contadora"),("Juan Pérez","1.112.223.334","Operario")]
         for n,d,p in demo:
-            c.execute("INSERT INTO employees(company_id,site_id,schedule_id,name,document,position) VALUES(?,?,?,?,?,?)",(co,site,sch,n,d,p))
-            eid=c.lastrowid
+            cur = c.execute("INSERT INTO employees(company_id,site_id,schedule_id,name,document,position) VALUES(?,?,?,?,?,?)",(co,site,sch,n,d,p))
+            eid = cur.lastrowid
             c.execute("INSERT INTO users(company_id,employee_id,username,password_hash,role) VALUES(?,?,?,?,?)",(co,eid,n.split()[0].lower(),hashpw("123456"),"empleado"))
         c.execute("INSERT INTO users(company_id,username,password_hash,role) VALUES(?,?,?,?)",(co,"admin",hashpw("admin123"),"administrador"))
     c.commit(); c.close()
@@ -147,7 +152,6 @@ def mark():
     c=db(); cur=c.execute("""INSERT INTO attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes) VALUES(?,?,?,?,?,?,?,?,?)""",(u["employee_id"],typ,dt.isoformat(timespec="seconds"),lat,lon,dist,int(valid),status,late)); c.commit(); c.close()
     return jsonify(id=cur.lastrowid,time=dt.strftime("%H:%M"),status=status,gps_valid=valid,late_minutes=late)
 
-# Inicializa la base de datos automáticamente al arrancar
 init_db()
 
 if __name__=="__main__": 
