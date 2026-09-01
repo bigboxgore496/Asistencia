@@ -4,6 +4,7 @@ import io
 import math
 from pathlib import Path
 import secrets
+import unicodedata
 from zoneinfo import ZoneInfo
 from flask import (
     Flask,
@@ -32,6 +33,14 @@ def db():
 
 def hashpw(p):
   return hashlib.sha256(p.encode()).hexdigest()
+
+
+def strip_accents(text):
+  if not text:
+    return ""
+  return "".join(
+      c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
+  )
 
 
 def init_db():
@@ -280,7 +289,7 @@ INDEX_HTML = """
                             <input type="text" id="emp-search" class="form-control" list="employees-list" placeholder="Seleccione o escriba su nombre..." autocomplete="off" required>
                             <datalist id="employees-list">
                                 <option value="admin">
-                                ${employees.map(e => `<option value="${e.name}">`).join('')}
+                                ${employees.map(e => `<option value="${e.name}"><option value="${e.username}">`).join('')}
                             </datalist>
                         </div>
                         <div class="mb-3">
@@ -498,26 +507,41 @@ def employees_list():
 @app.post("/api/login")
 def login():
   d = request.json or {}
-  login_input = (d.get("username") or "").strip().lower()
+  login_input = (d.get("username") or "").strip()
   p = d.get("password") or ""
   p_hash = hashpw(p)
-  c = db()
 
-  row = c.execute(
-      """
-        SELECT u.* FROM users u 
+  c = db()
+  rows = c.execute("""
+        SELECT u.*, e.name as emp_name, e.document as emp_doc 
+        FROM users u 
         LEFT JOIN employees e ON e.id = u.employee_id
-        WHERE (lower(u.username) = ? OR lower(e.name) = ? OR e.document = ?) 
-          AND u.password_hash = ? AND u.active = 1
-    """,
-      (login_input, login_input, login_input, p_hash),
-  ).fetchone()
+        WHERE u.active = 1
+    """).fetchall()
   c.close()
 
-  if not row:
+  matched_user = None
+  input_norm = strip_accents(login_input).lower()
+
+  for r in rows:
+    uname = (r["username"] or "").strip()
+    ename = (r["emp_name"] or "").strip()
+    edoc = (r["emp_doc"] or "").strip()
+
+    if (
+        input_norm == strip_accents(uname).lower()
+        or input_norm == strip_accents(ename).lower()
+        or input_norm == edoc
+    ):
+      if r["password_hash"] == p_hash:
+        matched_user = dict(r)
+        break
+
+  if not matched_user:
     return jsonify(error="Usuario o contraseña incorrectos"), 401
-  session["uid"] = row["id"]
-  return jsonify(user=dict(row))
+
+  session["uid"] = matched_user["id"]
+  return jsonify(user=matched_user)
 
 
 @app.post("/api/logout")
