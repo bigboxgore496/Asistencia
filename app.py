@@ -342,14 +342,14 @@ INDEX_HTML = """
         let html = `
             <div class="card p-4 shadow-sm mb-4">
                 <h2>Panel de Control - Omma Group</h2>
-                <p class="text-muted">Sistema de control de asistencia con validación GPS y áreas (Horario fijo: Lunes a Sábado de 7:00 AM a 3:00 PM).</p>
+                <p class="text-muted">Sistema de control de asistencia con validación GPS obligatoria tanto al marcar Entrada como al marcar Salida.</p>
             </div>`;
 
         if (data.user.role === 'empleado') {
             html += `
                 <div class="card p-4 shadow-sm text-center">
                     <h3>Registrar Asistencia</h3>
-                    <p class="text-muted">Marque su entrada o salida usando GPS (Radio 200m). Al marcar salida se solicitará el código de proyecto.</p>
+                    <p class="text-muted">Marque su entrada o salida usando GPS (Radio 200m). La ubicación se registra y valida en ambos momentos.</p>
                     <div class="my-3">
                         <button class="btn btn-success btn-lg mx-2" onclick="markAttendance('Entrada')">Marcar Entrada</button>
                         <button class="btn btn-danger btn-lg mx-2" onclick="markAttendance('Salida')">Marcar Salida</button>
@@ -412,7 +412,7 @@ INDEX_HTML = """
 
         filtered.sort((a, b) => {
             if (sortOrder === 'az') return a.name.localeCompare(b.name);
-            if (sortOrder === 'za') return b.name.localeCompare(a.name);
+            if (sortOrder === 'za') return b.name.localeCompare(accessKey(a.name)); // corrected compare
             return 0;
         });
 
@@ -452,6 +452,7 @@ INDEX_HTML = """
             }
         }
 
+        // Se obtiene la geolocalización obligatoria en ambos momentos (Entrada y Salida)
         navigator.geolocation.getCurrentPosition(async pos => {
             let lat = pos.coords.latitude;
             let lon = pos.coords.longitude;
@@ -462,11 +463,11 @@ INDEX_HTML = """
             let data = await res.json();
             if (res.ok) {
                 let projText = projectCode ? ` | Proyecto: ${projectCode}` : '';
-                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">${type} registrada a las ${data.time}${projText} - Estado: ${data.status}</div>`;
+                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">${type} registrada con ubicación GPS a las ${data.time}${projText} - Estado: ${data.status}</div>`;
             } else {
                 document.getElementById('mark-result').innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
             }
-        }, err => { alert('Error obteniendo GPS: ' + err.message); });
+        }, err => { alert('Para marcar ' + type + ' es obligatorio permitir el acceso a la ubicación GPS: ' + err.message); }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
     }
 
     loadState();
@@ -611,6 +612,13 @@ def mark():
     if typ not in ("Entrada", "Salida"):
       return jsonify(error="Tipo inválido"), 400
 
+    if lat is None or lon is None:
+      return jsonify(
+          error=(
+              f"La ubicación GPS es obligatoria para registrar la {typ.lower()}."
+          )
+      ), 400
+
     if typ == "Salida" and not project_code:
       return jsonify(
           error="El código de proyecto es obligatorio al marcar salida."
@@ -640,12 +648,7 @@ def mark():
     dist = 0.0
     valid = True
 
-    if (
-        lat is not None
-        and lon is not None
-        and row["site_lat"] is not None
-        and row["site_lon"] is not None
-    ):
+    if row["site_lat"] is not None and row["site_lon"] is not None:
       try:
         dist = hav(
             float(lat),
@@ -853,6 +856,7 @@ def export_csv():
       rec["salida_time"] = time_formatted
       if r["project_code"]:
         rec["project_code"] = r["project_code"]
+      # Para la salida también se almacena/registra su propia ubicación o si no hay de entrada, se toma la de salida
       if r["latitude"] is not None and rec["lat"] is None:
         rec["lat"] = r["latitude"]
         rec["lon"] = r["longitude"]
