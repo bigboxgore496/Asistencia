@@ -212,7 +212,6 @@ def export_csv():
         return jsonify(error="No autorizado"), 403
     
     c = db()
-    # Se incluyen a.latitude, a.longitude y a.distance_m en la consulta del reporte CSV
     rows = c.execute("""
         SELECT a.id, e.name as employee_name, e.document, s.name as site_name, 
                a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes 
@@ -226,12 +225,21 @@ def export_csv():
     
     si = io.StringIO()
     cw = csv.writer(si)
-    # Se añaden las columnas correspondientes en las cabeceras del CSV
-    cw.writerow(["ID", "Empleado", "Documento", "Sede", "Evento", "Fecha y Hora", "Latitud", "Longitud", "Distancia (m)", "Estado", "Minutos Retardo"])
+    cw.writerow(["ID", "Empleado", "Documento", "Sede", "Evento", "Fecha y Hora", "Ubicación Google Maps", "Distancia (m)", "Estado", "Minutos Retardo"])
+    
     for r in rows:
+        lat = r["latitude"]
+        lon = r["longitude"]
+        # Si hay coordenadas válidas, formateamos como una fórmula de hipervínculo compatible con Excel
+        if lat is not None and lon is not None:
+            maps_url = f"https://www.google.com/maps?q={lat},{lon}"
+            location_field = f'=HYPERLINK("{maps_url}"; "Ver en Mapa ({lat:.5f}, {lon:.5f})")'
+        else:
+            location_field = "Sin GPS"
+
         cw.writerow([
             r["id"], r["employee_name"], r["document"], r["site_name"], 
-            r["event_type"], r["event_time"], r["latitude"], r["longitude"], 
+            r["event_type"], r["event_time"], location_field, 
             f"{r['distance_m']:.1f}" if r["distance_m"] is not None else "", 
             r["status"], r["late_minutes"]
         ])
@@ -244,4 +252,4 @@ def export_csv():
 init_db()
 
 if __name__ == "__main__": 
-    app.run(host="0.0.0.0", port=5000, debug=True)    
+    app.run(host="0.0.0.0", port=5000, debug=True)
