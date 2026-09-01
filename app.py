@@ -315,8 +315,8 @@ INDEX_HTML = """
                     <div id="login-error" class="alert alert-danger d-none"></div>
                     <form onsubmit="doLogin(event)">
                         <div class="mb-3">
-                            <label class="form-label">Usuario, Nombre o Cédula</label>
-                            <input type="text" id="emp-search" class="form-control" placeholder="Escriba para autocompletar..." autocomplete="off" list="employees-datalist" required>
+                            <label class="form-label">Nombre del Empleado</label>
+                            <input type="text" id="emp-search" class="form-control" placeholder="Escriba su nombre para autocompletar..." autocomplete="off" list="employees-datalist" required>
                             <datalist id="employees-datalist"></datalist>
                         </div>
                         <div class="mb-3">
@@ -334,7 +334,7 @@ INDEX_HTML = """
                 let emps = await res.json();
                 let datalist = document.getElementById('employees-datalist');
                 if (datalist) {
-                    datalist.innerHTML = emps.map(e => `<option value="${e.name}">Usuario: ${e.username} | Área: ${e.area_name || 'N/A'}</option>`).join('');
+                    datalist.innerHTML = emps.map(e => `<option value="${e.name}">Área: ${e.area_name || 'N/A'}</option>`).join('');
                 }
             }
         } catch (e) {
@@ -581,17 +581,15 @@ def login():
     ename = (r["emp_name"] or "").strip()
     edoc = (r["emp_doc"] or "").strip()
 
-    if (
-        input_norm == strip_accents(uname).lower()
-        or input_norm == strip_accents(ename).lower()
-        or input_norm == edoc
-    ):
+    if input_norm == strip_accents(ename).lower() or input_norm == strip_accents(
+        uname
+    ).lower():
       if r["password_hash"] == p_hash:
         matched_user = dict(r)
         break
 
   if not matched_user:
-    return jsonify(error="Usuario o contraseña incorrectos"), 401
+    return jsonify(error="Nombre o contraseña incorrectos"), 401
 
   if matched_user["role"] == "empleado":
     c = db()
@@ -607,8 +605,8 @@ def login():
       c.close()
       return jsonify(
           error=(
-              "Este usuario está asociado a otro dispositivo móvil. Contacte"
-              " al administrador."
+              "Este usuario ya está vinculado a otro dispositivo móvil."
+              " Contacte al administrador para reiniciar el dispositivo."
           )
       ), 403
     c.close()
@@ -892,7 +890,6 @@ def export_csv():
   ).fetchall()
   c.close()
 
-  # Agrupar registros por empleado y fecha para consolidar en una sola fila por día
   daily_records = {}
   for r in rows:
     dt_str = r["event_time"]
