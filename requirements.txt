@@ -3,3 +3,7 @@ gunicorn
 Flask
 gspread
 google-auth
+Plaintext
+flask
+gspread
+openpyxl
