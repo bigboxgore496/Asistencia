@@ -28,7 +28,7 @@ def init_db():
         cur = c.execute("INSERT INTO companies(name) VALUES(?)", ("Empresa Demo S.A.S.",))
         co = cur.lastrowid
         
-        cur = c.execute("INSERT INTO sites(company_id,name,latitude,longitude,radius_m) VALUES(?,?,?,?,?)", (co, "Sede Principal", 6.2442, -75.5812, 150))
+        cur = c.execute("INSERT INTO sites(company_id,name,latitude,longitude,radius_m) VALUES(?,?,?,?,?)", (co, "Sede Principal", 6.214110727151654, -75.58268995990919, 200))
         site = cur.lastrowid
         
         cur = c.execute("""INSERT INTO schedules(company_id,name,mon,tue,wed,thu,fri,sat,sun,lunch_start,lunch_end,break_minutes,tolerance_minutes)
@@ -185,7 +185,7 @@ def mark():
         
         if typ == "Entrada":
             days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-            period = row[days[dt.weekday()]] if days[days[dt.weekday()]] in row.keys() else ""
+            period = row[days[dt.weekday()]] if days[dt.weekday()] in row.keys() else ""
             if period:
                 start = int(period[:2]) * 60 + int(period[3:5])
                 actual = dt.hour * 60 + dt.minute
