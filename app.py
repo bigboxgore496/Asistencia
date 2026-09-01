@@ -270,27 +270,19 @@ INDEX_HTML = """
     
     async function renderLogin() {
         document.getElementById('user-nav').innerHTML = '';
-        let employees = [];
-        try {
-            let res = await fetch('/api/employees/list');
-            if (res.ok) { employees = await res.json(); }
-        } catch (err) {
-            console.error("Error cargando empleados:", err);
-        }
 
         document.getElementById('app-container').innerHTML = `
             <div class="row justify-content-center mt-5">
                 <div class="col-md-5 card p-4 shadow">
-                    <h3 class="mb-3 text-center">Iniciar Sesión</h3>
+                    <div class="text-center mb-3">
+                        <img src="https://raw.githubusercontent.com/bigboxgore496/Asistencia/main/static/Omma%20Logo.jpg" alt="Omma Logo" style="max-height: 80px;" class="mb-3">
+                        <h3>Iniciar Sesión</h3>
+                    </div>
                     <div id="login-error" class="alert alert-danger d-none"></div>
                     <form onsubmit="doLogin(event)">
                         <div class="mb-3">
-                            <label class="form-label">Nombre de Usuario o Empleado</label>
-                            <input type="text" id="emp-search" class="form-control" list="employees-list" placeholder="Seleccione o escriba su nombre..." autocomplete="off" required>
-                            <datalist id="employees-list">
-                                <option value="admin">
-                                ${employees.map(e => `<option value="${e.name}"><option value="${e.username}">`).join('')}
-                            </datalist>
+                            <label class="form-label">Usuario</label>
+                            <input type="text" id="emp-search" class="form-control" placeholder="Ingrese su usuario..." autocomplete="off" required>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Contraseña</label>
@@ -300,7 +292,6 @@ INDEX_HTML = """
                     </form>
                 </div>
             </div>`;
-        window.allEmployees = employees;
     }
 
     async function doLogin(e) {
