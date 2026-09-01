@@ -35,8 +35,9 @@ def init_db():
         cur = c.execute("INSERT INTO sites(company_id,name,latitude,longitude,radius_m) VALUES(?,?,?,?,?)", (co, "Sede Principal", 6.214110727151654, -75.58268995990919, 200))
         site = cur.lastrowid
         
+        # Horario estandarizado Lunes a Sábado de 07:00 a 15:00
         cur = c.execute("""INSERT INTO schedules(company_id,name,mon,tue,wed,thu,fri,sat,sun,lunch_start,lunch_end,break_minutes,tolerance_minutes)
-                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (co, "Horario Normal (7am - 3pm)", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "", "12:00", "13:00", 60, 10))
+                     VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""", (co, "Horario General (07:00 - 15:00)", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "07:00-15:00", "", "12:00", "13:00", 60, 10))
         sch = cur.lastrowid
         
         area_names_list = ["Administración", "Comercial", "i+D", "Jefes", "Logistica", "Produccion", "Servicios"]
@@ -212,7 +213,7 @@ INDEX_HTML = """
         let html = `
             <div class="card p-4 shadow-sm mb-4">
                 <h2>Panel de Control - Omma Group</h2>
-                <p class="text-muted">Sistema de control de asistencia con validación GPS y áreas (Hora Colombia).</p>
+                <p class="text-muted">Sistema de control de asistencia con validación GPS y áreas (Horario fijo: Lunes a Sábado de 7:00 AM a 3:00 PM).</p>
             </div>`;
 
         if (role === 'empleado') {
@@ -227,110 +228,84 @@ INDEX_HTML = """
                     <div id="mark-result" class="mt-3"></div>
                 </div>`;
         } else {
-            window.areasData = data.areas;
+            window.allSysEmployees = data.employees;
+            window.allSysAreas = data.areas;
+            
             html += `
-                <div class="row">
-                    <div class="col-md-6">
-                        <div class="card p-3 shadow-sm mb-4">
-                            <h4>Configuración de Horarios de Áreas</h4>
-                            <form onsubmit="saveAreaScheduleCustom(event)" class="mb-3">
-                                <div class="mb-3">
-                                    <label class="form-label">Área</label>
-                                    <select id="config-area-id" class="form-select" onchange="onAreaChange()" required>
-                                        ${data.areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
-                                    </select>
-                                </div>
-                                <div class="mb-3">
-                                    <label class="form-label">Días Hábiles (L M M J V S D)</label>
-                                    <div class="d-flex justify-content-between gap-1">
-                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="mon" id="chk-mon" checked><label class="form-check-label" for="chk-mon">L</label></div>
-                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="tue" id="chk-tue" checked><label class="form-check-label" for="chk-tue">M</label></div>
-                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="wed" id="chk-wed" checked><label class="form-check-label" for="chk-wed">M</label></div>
-                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="thu" id="chk-thu" checked><label class="form-check-label" for="chk-thu">J</label></div>
-                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="fri" id="chk-fri" checked><label class="form-check-label" for="chk-fri">V</label></div>
-                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="sat" id="chk-sat" checked><label class="form-check-label" for="chk-sat">S</label></div>
-                                        <div class="form-check"><input class="form-check-input day-chk" type="checkbox" value="sun" id="chk-sun"><label class="form-check-label" for="chk-sun">D</label></div>
-                                    </div>
-                                </div>
-                                <div class="row mb-3">
-                                    <div class="col-6">
-                                        <label class="form-label">Hora Entrada</label>
-                                        <input type="time" id="config-time-start" class="form-control" value="07:00" required>
-                                    </div>
-                                    <div class="col-6">
-                                        <label class="form-label">Hora Salida</label>
-                                        <input type="time" id="config-time-end" class="form-control" value="15:00" required>
-                                    </div>
-                                </div>
-                                <button type="submit" class="btn btn-primary w-100">Guardar y Configurar Horario</button>
-                            </form>
-                        </div>
-                    </div>
-                    <div class="col-md-6">
-                        <div class="card p-3 shadow-sm mb-4">
-                            <h4>Reportes del Sistema</h4>
-                            <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia Consolidado (Excel / CSV)</a>
-                        </div>
-                    </div>
-                </div>
                 <div class="card p-3 shadow-sm mb-4">
-                    <h4>Empleados Registrados (${data.employees.length})</h4>
-                    <ul class="list-group list-group-flush" style="max-height: 400px; overflow-y: auto;">
-                        ${data.employees.map(e => `
-                            <li class="list-group-item d-flex justify-content-between align-items-center">
-                                <div>
-                                    <strong>${e.name}</strong><br>
-                                    <small class="text-muted">Doc: ${e.document || 'N/A'}</small>
-                                </div>
-                                <div>
-                                    <span class="badge bg-primary">${e.area_name || 'Sin área'}</span>
-                                    <span class="badge bg-secondary">${e.site_name || 'Sin sede'}</span>
-                                </div>
-                            </li>`).join('')}
+                    <h4>Reportes del Sistema</h4>
+                    <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia Consolidado (Excel / CSV)</a>
+                </div>
+                
+                <div class="card p-3 shadow-sm mb-4">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h4 class="mb-0">Empleados Registrados (<span id="emp-count-badge">${data.employees.length}</span>)</h4>
+                    </div>
+                    
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-4">
+                            <input type="text" id="filter-search" class="form-control" placeholder="Buscar por nombre o cédula..." oninput="filterEmployees()">
+                        </div>
+                        <div class="col-md-4">
+                            <select id="filter-area" class="form-select" onchange="filterEmployees()">
+                                <option value="">Todas las Áreas</option>
+                                ${data.areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <select id="filter-sort" class="form-select" onchange="filterEmployees()">
+                                <option value="az">Orden Alfabético (A - Z)</option>
+                                <option value="za">Orden Alfabético (Z - A)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <ul class="list-group list-group-flush" id="employees-list-container" style="max-height: 450px; overflow-y: auto;">
+                        <!-- Renderizado dinámico -->
                     </ul>
                 </div>`;
-            setTimeout(onAreaChange, 100);
+            setTimeout(filterEmployees, 50);
         }
         document.getElementById('app-container').innerHTML = html;
     }
 
-    function onAreaChange() {
-        let areaId = document.getElementById('config-area-id').value;
-        let area = window.areasData.find(a => a.id == areaId);
-        if (area) {
-            ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].forEach(d => {
-                let val = area[d] || '';
-                let chk = document.getElementById(`chk-${d}`);
-                if (chk) chk.checked = (val !== '');
-            });
-            let firstActive = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].map(d => area[d]).find(v => v && v.includes('-'));
-            if (firstActive) {
-                let parts = firstActive.split('-');
-                document.getElementById('config-time-start').value = parts[0] || '07:00';
-                document.getElementById('config-time-end').value = parts[1] || '15:00';
-            }
+    function filterEmployees() {
+        if (!window.allSysEmployees) return;
+        let search = document.getElementById('filter-search').value.toLowerCase();
+        let areaId = document.getElementById('filter-area').value;
+        let sortOrder = document.getElementById('filter-sort').value;
+
+        let filtered = window.allSysEmployees.filter(e => {
+            let matchSearch = e.name.toLowerCase().includes(search) || (e.document && e.document.includes(search));
+            let matchArea = areaId === "" || e.area_id == areaId;
+            return matchSearch && matchArea;
+        });
+
+        filtered.sort((a, b) => {
+            if (sortOrder === 'az') return a.name.localeCompare(b.name);
+            if (sortOrder === 'za') return b.name.localeCompare(a.name);
+            return 0;
+        });
+
+        let container = document.getElementById('employees-list-container');
+        document.getElementById('emp-count-badge').innerText = filtered.length;
+
+        if (filtered.length === 0) {
+            container.innerHTML = '<li class="list-group-item text-center text-muted">No se encontraron empleados con los filtros seleccionados</li>';
+            return;
         }
-    }
 
-    async function saveAreaScheduleCustom(e) {
-        e.preventDefault();
-        let areaId = document.getElementById('config-area-id').value;
-        let tStart = document.getElementById('config-time-start').value;
-        let tEnd = document.getElementById('config-time-end').value;
-        let rangeStr = `${tStart}-${tEnd}`;
-
-        let daysData = {};
-        ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'].forEach(d => {
-            let chk = document.getElementById(`chk-${d}`);
-            daysData[d] = chk && chk.checked ? rangeStr : '';
-        });
-
-        let res = await fetch('/api/area/schedule/custom', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({area_id: areaId, ...daysData, name: `Horario ${tStart} - ${tEnd}`})
-        });
-        if (res.ok) { alert('Horario configurado y guardado con éxito'); loadState(); }
-        else { alert('Error al guardar el horario'); }
+        container.innerHTML = filtered.map(e => `
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+                <div>
+                    <strong>${e.name}</strong><br>
+                    <small class="text-muted">Doc: ${e.document || 'N/A'}</small>
+                </div>
+                <div>
+                    <span class="badge bg-primary">${e.area_name || 'Sin área'}</span>
+                    <span class="badge bg-secondary">${e.site_name || 'Sin sede'}</span>
+                </div>
+            </li>`).join('');
     }
 
     async function markAttendance(type) {
@@ -405,32 +380,6 @@ def state():
     attendance = [dict(x) for x in c.execute("""SELECT a.*,e.name employee_name FROM attendance a JOIN employees e ON e.id=a.employee_id WHERE e.company_id=? ORDER BY a.id DESC LIMIT 100""", (cid,))]
     incidents = [dict(x) for x in c.execute("""SELECT i.*,e.name employee_name FROM incidents i JOIN employees e ON e.id=i.employee_id WHERE e.company_id=? ORDER BY i.id DESC""", (cid,))]
     c.close(); return jsonify(companies=companies, sites=sites, schedules=schedules, areas=areas, employees=employees, attendance=attendance, incidents=incidents, user=u)
-
-@app.post("/api/area/schedule/custom")
-def area_schedule_custom():
-    u = current_user()
-    if not u or u["role"] != "administrador": return jsonify(error="No autorizado"), 403
-    d = request.json or {}
-    area_id = d.get("area_id")
-    name = d.get("name", "Horario Personalizado")
-    mon = d.get("mon", "")
-    tue = d.get("tue", "")
-    wed = d.get("wed", "")
-    thu = d.get("thu", "")
-    fri = d.get("fri", "")
-    sat = d.get("sat", "")
-    sun = d.get("sun", "")
-
-    c = db()
-    cur = c.execute("""
-        INSERT INTO schedules(company_id, name, mon, tue, wed, thu, fri, sat, sun, lunch_start, lunch_end, break_minutes, tolerance_minutes)
-        VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, '12:00', '13:00', 60, 10)
-    """, (u["company_id"], name, mon, tue, wed, thu, fri, sat, sun))
-    new_sch_id = cur.lastrowid
-
-    c.execute("UPDATE areas SET schedule_id=? WHERE id=? AND company_id=?", (new_sch_id, area_id, u["company_id"]))
-    c.commit(); c.close()
-    return jsonify(ok=True)
 
 @app.post("/api/mark")
 def mark():
@@ -596,7 +545,6 @@ def export_csv():
         rec = daily_records[emp_key]
         time_formatted = dt_obj.strftime("%I:%M:%S %p").lower()
         
-        # Calcular horario específico de ese día de la semana si existe
         weekday_idx = dt_obj.weekday()
         day_key = days_list[weekday_idx]
         period = r[day_key] if day_key in r.keys() else ""
@@ -608,7 +556,6 @@ def export_csv():
                 rec["lon"] = r["longitude"]
                 rec["distance_m"] = r["distance_m"]
             
-            # Cálculo de retardo robusto
             if period and "-" in period:
                 try:
                     start_str = period.split("-")[0]
@@ -631,7 +578,6 @@ def export_csv():
                 rec["lon"] = r["longitude"]
                 rec["distance_m"] = r["distance_m"]
             
-            # Cálculo de extras robusto
             if period and "-" in period:
                 try:
                     end_str = period.split("-")[1]
