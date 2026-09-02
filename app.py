@@ -92,7 +92,7 @@ def init_db():
             "07:00-15:00",
             "07:00-15:00",
             "07:00-15:00",
-            "",
+            "07:00-15:00",
             "13:00",
             "13:40",
             40,
@@ -183,7 +183,6 @@ def init_db():
         (co, "admin", hashpw("OMMA2016"), "administrador"),
     )
 
-    # Simulación de 30 días para el Ingeniero Juan Julio Gómez Estrada (Lunes a Domingo, 7am a 5pm en agosto)
     jj_emp = c.execute(
         "SELECT id FROM employees WHERE document = ?", ("1037596166",)
     ).fetchone()
@@ -196,7 +195,6 @@ def init_db():
         current_date = start_date + timedelta(days=i)
         date_str = current_date.isoformat()
         
-        # Entrada a las 07:00:00 AM
         entrada_time = f"{date_str} 07:00:00"
         c.execute(
             """INSERT INTO attendance(employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code)
@@ -204,7 +202,6 @@ def init_db():
             (jj_id, "Entrada", entrada_time, base_lat, base_lon, 5.0, 1, "A tiempo", 0, 0, "")
         )
         
-        # Salida a las 05:00:00 PM (17:00:00) -> 2 horas extra diarias de 15:00 a 17:00 (120 minutos)
         salida_time = f"{date_str} 17:00:00"
         c.execute(
             """INSERT INTO attendance(employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code)
@@ -901,11 +898,17 @@ def export_csv():
   rows = c.execute(
       """
         SELECT a.id, e.id as emp_id, e.name as employee_name, e.document, s.name as site_name, ar.name as area_name,
-               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code
+               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code,
+               COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
+               COALESCE(ar_sch.wed, h.wed) wed, COALESCE(ar_sch.thu, h.thu) thu, 
+               COALESCE(ar_sch.fri, h.fri) fri, COALESCE(ar_sch.sat, h.sat) sat, 
+               COALESCE(ar_sch.sun, h.sun) sun
         FROM attendance a 
         JOIN employees e ON e.id = a.employee_id 
         LEFT JOIN sites s ON s.id = e.site_id 
+        LEFT JOIN schedules h ON h.id = e.schedule_id 
         LEFT JOIN areas ar ON ar.id = e.area_id
+        LEFT JOIN schedules ar_sch ON ar_sch.id = ar.schedule_id
         WHERE e.company_id = ? 
         ORDER BY a.event_time ASC
     """,
@@ -928,6 +931,11 @@ def export_csv():
     emp_id = r["emp_id"]
     key = (emp_id, date_key)
 
+    days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    day_key_idx = dt_obj.weekday()
+    day_col = days[day_key_idx]
+    period = r[day_col] or ""
+
     if key not in daily_records:
       daily_records[key] = {
           "employee_name": r["employee_name"],
@@ -936,6 +944,7 @@ def export_csv():
           "site_name": r["site_name"],
           "date": dt_obj.strftime("%d-%b-%Y").lower(),
           "date_obj": dt_obj.date(),
+          "period": period,
           "entrada": None,
           "salida": None,
       }
@@ -989,20 +998,45 @@ def export_csv():
   ):
     ent = rec["entrada"] or {}
     sal = rec["salida"] or {}
+    period = rec["period"]
 
     hed, hen, hedf, henf = 0, 0, 0, 0
 
     if ent.get("time_obj") and sal.get("time_obj"):
-      inicio_extra = ent["time_obj"]
+      # Si el turno en ese día está vacío o no configurado, asumimos jornada estándar 07:00 a 15:00
+      try:
+        if period and "-" in period:
+          end_time_str = period.split("-")[1]
+          end_h, end_m = map(int, end_time_str.split(":"))
+        else:
+          end_h, end_m = 15, 0
+
+        shift_end_obj = datetime.combine(
+            rec["date_obj"],
+            datetime.min.time(),
+            tzinfo=ent["time_obj"].tzinfo,
+        ) + timedelta(hours=end_h, minutes=end_m)
+      except Exception:
+        shift_end_obj = ent["time_obj"] + timedelta(hours=8)
+
+      # Si es domingo (weekday() == 6), todo el tiempo laborado posterior a la entrada o la totalidad si marca en día dominical se considera festivo/dominical.
+      es_domingo_festivo = rec["date_obj"].weekday() == 6
+
+      if es_domingo_festivo:
+        # En domingo, si asiste, se evalúa desde la entrada o turno completo como festivo
+        inicio_extra = ent["time_obj"]
+      else:
+        inicio_extra = max(ent["time_obj"], shift_end_obj)
+
       fin_extra = sal["time_obj"]
+
       if fin_extra > inicio_extra:
-        es_festivo_domingo = rec["date_obj"].weekday() == 6
         current = inicio_extra
         while current < fin_extra:
           hour = current.hour
           is_night = hour >= 19 or hour < 6
 
-          if es_festivo_domingo:
+          if es_domingo_festivo:
             if is_night:
               henf += 1
             else:
@@ -1087,4 +1121,4 @@ def export_csv():
 init_db()
 
 if __name__ == "__main__":
-  app.run(debug=True, host="0.0.0.0", port=5000)
+  app.run(debug=True, host="0.0.0.0", port5000=5000)
