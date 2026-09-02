@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import date, datetime, timedelta
 import hashlib
 import io
 import math
@@ -41,6 +41,76 @@ def strip_accents(text):
   return "".join(
       c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
   )
+
+
+def es_festivo_colombia(d: date) -> bool:
+  if d.weekday() == 6:
+    return True
+
+  fixed = [(1, 1), (5, 1), (7, 20), (8, 7), (12, 8), (12, 25)]
+  if (d.month, d.day) in fixed:
+    return True
+
+  def get_easter(year):
+    a = year % 19
+    b = year // 100
+    c = year % 100
+    d_val = b // 4
+    e = b % 4
+    f = (b + 8) // 25
+    g = (b - f + 1) // 3
+    h = (19 * a + b - d_val - g + 15) % 30
+    i = c // 4
+    k = c % 4
+    L = (32 + 2 * e + 2 * i - h - k) % 7
+    m = (a + 11 * h + 22 * L) // 451
+    month = (h + L - 7 * m + 114) // 31
+    day = ((h + L - 7 * m + 114) % 31) + 1
+    return date(year, month, day)
+
+  easter = get_easter(d.year)
+
+  def next_monday(dt_val):
+    days_to_next = (7 - dt_val.weekday()) % 7
+    if days_to_next == 0:
+      days_to_next = 7
+    return dt_val + timedelta(days=days_to_next)
+
+  rel_holidays = [
+      easter - timedelta(days=3),
+      easter - timedelta(days=2),
+      next_monday(easter + timedelta(days=39)),
+      next_monday(easter + timedelta(days=60)),
+      next_monday(easter + timedelta(days=68)),
+  ]
+  if d in rel_holidays:
+    return True
+
+  emiliani = [(1, 6), (3, 19), (6, 29), (8, 15), (10, 12), (11, 1), (11, 11)]
+  for m, day_val in emiliani:
+    dt_orig = date(d.year, m, day_val)
+    if dt_orig.weekday() != 0:
+      days_to_next = (7 - dt_orig.weekday()) % 7
+      dt_mov = dt_orig + timedelta(days=days_to_next)
+    else:
+      dt_mov = dt_orig
+    if d == dt_mov:
+      return True
+
+  return False
+
+
+def format_hm(mins):
+  if not mins or mins <= 0:
+    return ""
+  h = mins // 60
+  m = mins % 60
+  if h > 0 and m > 0:
+    return f"{h}h {m}m"
+  elif h > 0:
+    return f"{h}h"
+  else:
+    return f"{m}m"
 
 
 def init_db():
@@ -404,7 +474,7 @@ INDEX_HTML = """
             html += `
                 <div class="card p-3 shadow-sm mb-4">
                     <h4>Reportes del Sistema</h4>
-                    <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia (Excel)</a>
+                    <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia (Excel con Desglose de Extras)</a>
                 </div>
                 
                 <div class="card p-3 shadow-sm mb-4">
@@ -871,11 +941,17 @@ def export_csv():
   rows = c.execute(
       """
         SELECT a.id, e.id as emp_id, e.name as employee_name, e.document, s.name as site_name, ar.name as area_name,
-               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code
+               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code,
+               COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
+               COALESCE(ar_sch.wed, h.wed) wed, COALESCE(ar_sch.thu, h.thu) thu, 
+               COALESCE(ar_sch.fri, h.fri) fri, COALESCE(ar_sch.sat, h.sat) sat, 
+               COALESCE(ar_sch.sun, h.sun) sun
         FROM attendance a 
         JOIN employees e ON e.id = a.employee_id 
         LEFT JOIN sites s ON s.id = e.site_id 
         LEFT JOIN areas ar ON ar.id = e.area_id
+        LEFT JOIN schedules h ON h.id = e.schedule_id
+        LEFT JOIN schedules ar_sch ON ar_sch.id = ar.schedule_id
         WHERE e.company_id = ? 
         ORDER BY a.event_time ASC
     """,
@@ -907,6 +983,7 @@ def export_csv():
           "date": dt_obj.strftime("%d-%b-%Y").lower(),
           "entrada": None,
           "salida": None,
+          "row_ref": r,
       }
 
     event_info = {
@@ -918,6 +995,7 @@ def export_csv():
         "late": r["late_minutes"],
         "overtime": r["overtime_minutes"],
         "project_code": r["project_code"],
+        "dt_obj": dt_obj,
     }
 
     if r["event_type"] == "Entrada":
@@ -945,15 +1023,59 @@ def export_csv():
       "Salida - Proyecto",
       "Salida - Estado",
       "Minutos Retardo",
-      "Total Extras",
+      "H. Extras Diurnas (HED)",
+      "H. Extras Nocturnas (HEN)",
+      "H. Extras Diurnas Festivas (HEDF)",
+      "H. Extras Nocturnas Festivas (HENF)",
   ]
   ws.append(headers)
+
+  days_map = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
 
   for key, rec in sorted(
       daily_records.items(), key=lambda x: (x[0][1], x[1]["employee_name"])
   ):
     ent = rec["entrada"] or {}
     sal = rec["salida"] or {}
+    r_data = rec["row_ref"]
+
+    hed = 0
+    hen = 0
+    hedf = 0
+    henf = 0
+
+    if sal and sal.get("dt_obj"):
+      sal_dt = sal["dt_obj"]
+      day_idx = sal_dt.weekday()
+      d_key = days_map[day_idx]
+      period = r_data[d_key] if d_key in r_data.keys() else ""
+
+      if period and len(period) >= 11:
+        try:
+          end_h = int(period[6:8])
+          end_m = int(period[9:11])
+          sched_end_dt = sal_dt.replace(
+              hour=end_h, minute=end_m, second=0, microsecond=0
+          )
+          if sal_dt > sched_end_dt:
+            curr = sched_end_dt
+            is_fest = es_festivo_colombia(curr.date())
+            while curr < sal_dt:
+              h = curr.hour
+              is_night = h >= 19 or h < 6
+              if is_fest:
+                if is_night:
+                  henf += 1
+                else:
+                  hedf += 1
+              else:
+                if is_night:
+                  hen += 1
+                else:
+                  hed += 1
+              curr += timedelta(minutes=1)
+        except Exception as e:
+          print(f"Error calculando desglose de extras: {e}")
 
     ent_maps = ""
     if ent.get("lat") is not None and ent.get("lon") is not None:
@@ -998,7 +1120,10 @@ def export_csv():
         sal.get("project_code", ""),
         sal.get("status", ""),
         int(ent.get("late", 0) or 0),
-        int(sal.get("overtime", 0) or 0),
+        format_hm(hed),
+        format_hm(hen),
+        format_hm(hedf),
+        format_hm(henf),
     ]
     ws.append(row_data)
 
