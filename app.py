@@ -1132,12 +1132,17 @@ def auto_inyectar_agosto():
             while curr_d <= end_d:
                 fs = curr_d.strftime("%Y-%m-%d")
                 
-                # Seleccionar aleatoriamente la hora de entrada
-                min_aleatorio = random.choice(minutos_entrada_opciones)
-                hora_entrada_str = f"{fs} 07:{min_aleatorio}:00"
+                # Seleccionar aleatoriamente los minutos de entrada
+                min_str = random.choice(minutos_entrada_opciones)
+                min_int = int(min_str)
+                hora_entrada_str = f"{fs} 07:{min_str}:00"
                 
-                # Inyectar Entrada
-                c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Entrada', ?, 6.214110, -75.582689, 10.0, 1, 'A tiempo', 0, 0, '', 0, 0, 0, 0)", (emp_id, hora_entrada_str))
+                # Calcular retraso y estado de la entrada (Asumiendo entrada oficial a las 07:00 AM)
+                late_mins = min_int
+                status_entrada = 'A tiempo' if late_mins == 0 else 'Tarde'
+                
+                # Inyectar Entrada con minutos de retraso calculados
+                c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Entrada', ?, 6.214110, -75.582689, 10.0, 1, ?, ?, 0, '', 0, 0, 0, 0)", (emp_id, hora_entrada_str, status_entrada, late_mins))
                 
                 # Calcular horas extras reales (Salida fija a las 22:00:00 / 10:00 PM)
                 dt_salida = datetime(curr_d.year, curr_d.month, curr_d.day, 22, 0, 0, tzinfo=COLOMBIA_TZ)
@@ -1168,3 +1173,4 @@ def auto_inyectar_agosto():
 
 # Esta línea ejecuta la función sola apenas Render arranca la app
 auto_inyectar_agosto()
+
