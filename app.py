@@ -1107,15 +1107,19 @@ init_db()
 if __name__ == "__main__":
   app.run(debug=True, host="0.0.0.0", port=5000)
 
+import io
+from flask import send_file
+
 @app.get("/api/descargar-reporte-julio")
 def descargar_reporte_julio():
     try:
         c = db()
-        emp = c.execute("SELECT id FROM employees WHERE name LIKE '%SEBASTIAN QUIROZ%'").fetchone()
+        emp = c.execute("SELECT id, name, document, department, sede FROM employees WHERE name LIKE '%SEBASTIAN QUIROZ%'").fetchone()
         if not emp:
             c.close()
-            return "Empleado Sebastián Quiroz no encontrado en la base de datos", 404
-        emp_id = emp[0]
+            return "Empleado Sebastián Quiroz no encontrado", 404
+        
+        emp_id = emp['id']
         
         # Validar si ya existen registros para julio de 2026
         check = c.execute("SELECT COUNT(*) FROM attendance WHERE employee_id=? AND event_time LIKE '2026-07%'", (emp_id,)).fetchone()[0]
@@ -1124,10 +1128,10 @@ def descargar_reporte_julio():
             end_d = date(2026, 7, 31)
             while curr_d <= end_d:
                 fs = curr_d.strftime("%Y-%m-%d")
-                # Insertar entrada (6:58 a.m.)
+                # Insertar entrada
                 c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Entrada', ?, 6.214110, -75.582689, 10.0, 1, 'A tiempo', 0, 0, '', 0, 0, 0, 0)", (emp_id, f"{fs} 06:58:00"))
                 
-                # Cálculo exacto de las 4 categorías de horas extras hasta las 11:18 p.m.
+                # Cálculo de horas extras
                 dt_salida = datetime(curr_d.year, curr_d.month, curr_d.day, 23, 18, 0, tzinfo=COLOMBIA_TZ)
                 t_fin = datetime(curr_d.year, curr_d.month, curr_d.day, 15, 0, 0, tzinfo=COLOMBIA_TZ)
                 ed, en, efd, efn = 0, 0, 0, 0
@@ -1145,16 +1149,48 @@ def descargar_reporte_julio():
                     temp += timedelta(minutes=1)
                 tot = ed + en + efd + efn
                 
-                # Insertar salida con el desglose de horas extras
+                # Insertar salida con desglose
                 c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Salida', ?, 6.214110, -75.582689, 10.0, 1, ?, 0, ?, 'DA 149', ?, ?, ?, ?)", (emp_id, f"{fs} 23:18:00", f"Hora extra {tot} min", tot, ed, en, efd, efn))
                 curr_d += timedelta(days=1)
             c.commit()
+
+        # Generar el Excel al vuelo con openpyxl
+        wb = openpyxl.Workbook()
+        ws = wb.active
+        ws.title = "Reporte Asistencia"
+        
+        headers = [
+            "Empleado", "Documento", "Área", "Sede", "Fecha", 
+            "Entrada - 1", "Entrada - 2", "Entrada - 3", "Entrada - 4", 
+            "Salida - Hora", "Salida - GP", "Salida - Dis", "Salida - Pro", 
+            "Salida - Est", "Minutos Ret", "Total Extra", 
+            "Extra Diurna", "Extra Nocturna", "Extra Festiva Diurna", "Extra Festiva Nocturna (Horas)"
+        ]
+        ws.append(headers)
+        
+        # Consultar las salidas de julio para llenar la tabla
+        rows = c.execute("""
+            SELECT a.event_time, a.extra_diurna_mins, a.extra_nocturna_mins, a.extra_festiva_diurna_mins, a.extra_festiva_nocturna_mins, a.overtime_minutes
+            FROM attendance a 
+            WHERE a.employee_id = ? AND a.event_time LIKE '2026-07%' AND a.event_type = 'Salida'
+            ORDER BY a.event_time ASC
+        """, (emp_id,)).fetchall()
+        
+        for r in rows:
+            fecha_str = r['event_time'].split(' ')[0]
+            ws.append([
+                emp['name'], emp['document'] or '', emp['department'] or '', emp['sede'] or '', fecha_str,
+                "06:58:00", "", "", "",
+                "23:18:00", "6.214110, -75.582689", "10.0", "DA 149",
+                "A tiempo", 0, r['overtime_minutes'],
+                r['extra_diurna_mins'], r['extra_nocturna_mins'], r['extra_festiva_diurna_mins'], r['extra_festiva_nocturna_mins'] / 60.0
+            ])
+            
         c.close()
         
-        # Llamada directa a su función de exportación a Excel existente en app.py
-        return export_csv() # O el nombre exacto de la función que genera el archivo Excel en su app
-    except Exception as e:
-        return f"Error en la generación: {str(e)}", 500
-        return export_excel() # Cambie export_excel por el nombre exacto de la función que genera su archivo Excel en app.py si es diferente
+        output = io.BytesIO()
+        wb.save(output)
+        output.seek(0)
+        return send_file(output, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet", as_attachment=True, download_name="reporte_asistencia_julio.xlsx")
     except Exception as e:
         return f"Error: {str(e)}", 500
