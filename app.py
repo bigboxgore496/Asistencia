@@ -85,14 +85,14 @@ def init_db():
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             co,
-            "Horario Normal OMMA (07:00 - 15:00)",
+            "Horario Normal OMMA (L-V 07:00 - 15:00)",
             "07:00-15:00",
             "07:00-15:00",
             "07:00-15:00",
             "07:00-15:00",
             "07:00-15:00",
-            "07:00-15:00",
-            "07:00-15:00",
+            "",
+            "",
             "13:00",
             "13:40",
             40,
@@ -191,7 +191,8 @@ def init_db():
       base_lat = 6.214110727151654
       base_lon = -75.58268995990919
       start_date = date(2026, 8, 1)
-      for i in range(30):
+      # Todo Agosto de 2026 (31 días) de 07:00 a 23:00 sin excepción
+      for i in range(31):
         current_date = start_date + timedelta(days=i)
         date_str = current_date.isoformat()
         
@@ -202,11 +203,11 @@ def init_db():
             (jj_id, "Entrada", entrada_time, base_lat, base_lon, 5.0, 1, "A tiempo", 0, 0, "")
         )
         
-        salida_time = f"{date_str} 17:00:00"
+        salida_time = f"{date_str} 23:00:00"
         c.execute(
             """INSERT INTO attendance(employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code)
                VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (jj_id, "Salida", salida_time, base_lat, base_lon, 5.0, 1, "Hora extra 120 min (2h 0m)", 0, 120, "DA 150")
+            (jj_id, "Salida", salida_time, base_lat, base_lon, 5.0, 1, "Hora extra 960 min (16h 0m)", 0, 960, "DA 150")
         )
 
   c.commit()
@@ -1003,29 +1004,24 @@ def export_csv():
     hed, hen, hedf, henf = 0, 0, 0, 0
 
     if ent.get("time_obj") and sal.get("time_obj"):
-      # Si el turno en ese día está vacío o no configurado, asumimos jornada estándar 07:00 a 15:00
-      try:
-        if period and "-" in period:
-          end_time_str = period.split("-")[1]
-          end_h, end_m = map(int, end_time_str.split(":"))
-        else:
-          end_h, end_m = 15, 0
-
-        shift_end_obj = datetime.combine(
-            rec["date_obj"],
-            datetime.min.time(),
-            tzinfo=ent["time_obj"].tzinfo,
-        ) + timedelta(hours=end_h, minutes=end_m)
-      except Exception:
-        shift_end_obj = ent["time_obj"] + timedelta(hours=8)
-
-      # Si es domingo (weekday() == 6), todo el tiempo laborado posterior a la entrada o la totalidad si marca en día dominical se considera festivo/dominical.
+      # Si el turno está vacío (día no laborable como sábado o domingo), TODO el tiempo trabajado es hora extra.
+      # Si es domingo o festivo, se clasifica como festivo (HEDF/HENF). Si es sábado u otro día libre, como HED/HEN.
       es_domingo_festivo = rec["date_obj"].weekday() == 6
 
-      if es_domingo_festivo:
-        # En domingo, si asiste, se evalúa desde la entrada o turno completo como festivo
+      if not period:
         inicio_extra = ent["time_obj"]
       else:
+        try:
+          end_time_str = period.split("-")[1]
+          end_h, end_m = map(int, end_time_str.split(":"))
+          shift_end_obj = datetime.combine(
+              rec["date_obj"],
+              datetime.min.time(),
+              tzinfo=ent["time_obj"].tzinfo,
+          ) + timedelta(hours=end_h, minutes=end_m)
+        except Exception:
+          shift_end_obj = ent["time_obj"] + timedelta(hours=8)
+        
         inicio_extra = max(ent["time_obj"], shift_end_obj)
 
       fin_extra = sal["time_obj"]
