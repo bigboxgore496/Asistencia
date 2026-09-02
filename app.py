@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import hashlib
 import io
 import math
@@ -182,6 +182,36 @@ def init_db():
         "INSERT INTO users(company_id,username,password_hash,role) VALUES(?,?,?,?)",
         (co, "admin", hashpw("OMMA2016"), "administrador"),
     )
+
+    # Simulación de 30 días para el Ingeniero Juan Julio Gómez Estrada (Lunes a Domingo, 7am a 5pm en agosto)
+    jj_emp = c.execute(
+        "SELECT id FROM employees WHERE document = ?", ("1037596166",)
+    ).fetchone()
+    if jj_emp:
+      jj_id = jj_emp["id"]
+      base_lat = 6.214110727151654
+      base_lon = -75.58268995990919
+      start_date = date(2026, 8, 1)
+      for i in range(30):
+        current_date = start_date + timedelta(days=i)
+        date_str = current_date.isoformat()
+        
+        # Entrada a las 07:00:00 AM
+        entrada_time = f"{date_str} 07:00:00"
+        c.execute(
+            """INSERT INTO attendance(employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code)
+               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (jj_id, "Entrada", entrada_time, base_lat, base_lon, 5.0, 1, "A tiempo", 0, 0, "")
+        )
+        
+        # Salida a las 05:00:00 PM (17:00:00) -> 2 horas extra diarias de 15:00 a 17:00 (120 minutos)
+        salida_time = f"{date_str} 17:00:00"
+        c.execute(
+            """INSERT INTO attendance(employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code)
+               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+            (jj_id, "Salida", salida_time, base_lat, base_lon, 5.0, 1, "Hora extra 120 min (2h 0m)", 0, 120, "DA 150")
+        )
+
   c.commit()
   c.close()
 
@@ -861,21 +891,6 @@ def mark():
     return jsonify(error=f"Excepción interna: {str(e)}"), 500
 
 
-@app.get("/api/test/registers")
-def test_registers():
-  c = db()
-  rows = c.execute("""
-        SELECT a.id, e.name as employee_name, a.event_type, a.event_time, 
-               a.latitude, a.longitude, a.distance_m, a.gps_valid, 
-               a.status, a.late_minutes, a.overtime_minutes, a.project_code
-        FROM attendance a
-        JOIN employees e ON e.id = a.employee_id
-        ORDER BY a.id DESC
-    """).fetchall()
-  c.close()
-  return jsonify([dict(r) for r in rows])
-
-
 @app.get("/api/report/csv")
 def export_csv():
   u = current_user()
@@ -920,11 +935,13 @@ def export_csv():
           "area_name": r["area_name"],
           "site_name": r["site_name"],
           "date": dt_obj.strftime("%d-%b-%Y").lower(),
+          "date_obj": dt_obj.date(),
           "entrada": None,
           "salida": None,
       }
 
     event_info = {
+        "time_obj": dt_obj,
         "time": dt_obj.strftime("%I:%M:%S %p").lower(),
         "lat": r["latitude"],
         "lon": r["longitude"],
@@ -960,7 +977,10 @@ def export_csv():
       "Salida - Proyecto",
       "Salida - Estado",
       "Minutos Retardo",
-      "Total Extras",
+      "H.E. Diurna (HED)",
+      "H.E. Nocturna (HEN)",
+      "H.E. Diurna Festiva (HEDF)",
+      "H.E. Nocturna Festiva (HENF)",
   ]
   ws.append(headers)
 
@@ -969,6 +989,36 @@ def export_csv():
   ):
     ent = rec["entrada"] or {}
     sal = rec["salida"] or {}
+
+    hed, hen, hedf, henf = 0, 0, 0, 0
+
+    if ent.get("time_obj") and sal.get("time_obj"):
+      inicio_extra = ent["time_obj"]
+      fin_extra = sal["time_obj"]
+      if fin_extra > inicio_extra:
+        es_festivo_domingo = rec["date_obj"].weekday() == 6
+        current = inicio_extra
+        while current < fin_extra:
+          hour = current.hour
+          is_night = hour >= 19 or hour < 6
+
+          if es_festivo_domingo:
+            if is_night:
+              henf += 1
+            else:
+              hedf += 1
+          else:
+            if is_night:
+              hen += 1
+            else:
+              hed += 1
+
+          current += timedelta(minutes=1)
+
+    hed_h = round(hed / 60, 2)
+    hen_h = round(hen / 60, 2)
+    hedf_h = round(hedf / 60, 2)
+    henf_h = round(henf / 60, 2)
 
     ent_maps = ""
     if ent.get("lat") is not None and ent.get("lon") is not None:
@@ -1013,7 +1063,10 @@ def export_csv():
         sal.get("project_code", ""),
         sal.get("status", ""),
         int(ent.get("late", 0) or 0),
-        int(sal.get("overtime", 0) or 0),
+        hed_h,
+        hen_h,
+        hedf_h,
+        henf_h,
     ]
     ws.append(row_data)
 
