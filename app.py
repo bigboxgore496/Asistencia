@@ -1,4 +1,4 @@
-from datetime import datetime, date, timedelta
+from datetime import datetime, date
 import hashlib
 import io
 import math
@@ -22,36 +22,6 @@ app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 DB = Path(__file__).with_name("asistencia.db")
 COLOMBIA_TZ = ZoneInfo("America/Bogota")
-
-# Festivos oficiales de Colombia para el año 2026
-FESTIVOS_COLOMBIA_2026 = {
-    date(2026, 1, 1),   # Año Nuevo
-    date(2026, 12, 8),  # Día de la Inmaculada Concepción
-    date(2026, 12, 25), # Navidad
-    date(2026, 1, 12),  # Reyes Magos
-    date(2026, 3, 23),  # Día de San José
-    date(2026, 4, 2),   # Jueves Santo
-    date(2026, 4, 3),   # Viernes Santo
-    date(2026, 5, 1),   # Día del Trabajo
-    date(2026, 5, 18),  # Ascensión del Señor
-    date(2026, 6, 8),   # Corpus Christi
-    date(2026, 6, 15),  # Sagrado Corazón
-    date(2026, 6, 29),  # San Pedro y San Pablo
-    date(2026, 7, 20),  # Grito de Independencia
-    date(2026, 8, 7),   # Batalla de Boyacá
-    date(2026, 8, 17),  # La Asunción de la Virgen
-    date(2026, 10, 12), # Día de la Raza
-    date(2026, 11, 2),  # Todos los Santos
-    date(2026, 11, 16), # Independencia de Cartagena
-}
-
-
-def es_domingo(d: date) -> bool:
-  return d.weekday() == 6
-
-
-def es_festivo(d: date) -> bool:
-  return d in FESTIVOS_COLOMBIA_2026
 
 
 def db():
@@ -115,13 +85,13 @@ def init_db():
             VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             co,
-            "Horario Normal OMMA (L-V 07:00 - 15:00)",
+            "Horario Normal OMMA (07:00 - 15:00)",
             "07:00-15:00",
             "07:00-15:00",
             "07:00-15:00",
             "07:00-15:00",
             "07:00-15:00",
-            "",
+            "07:00-15:00",
             "",
             "13:00",
             "13:40",
@@ -212,33 +182,6 @@ def init_db():
         "INSERT INTO users(company_id,username,password_hash,role) VALUES(?,?,?,?)",
         (co, "admin", hashpw("OMMA2016"), "administrador"),
     )
-
-    jj_emp = c.execute(
-        "SELECT id FROM employees WHERE document = ?", ("1037596166",)
-    ).fetchone()
-    if jj_emp:
-      jj_id = jj_emp["id"]
-      base_lat = 6.214110727151654
-      base_lon = -75.58268995990919
-      start_date = date(2026, 8, 1)
-      for i in range(31):
-        current_date = start_date + timedelta(days=i)
-        date_str = current_date.isoformat()
-        
-        entrada_time = f"{date_str} 07:00:00"
-        c.execute(
-            """INSERT INTO attendance(employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code)
-               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (jj_id, "Entrada", entrada_time, base_lat, base_lon, 5.0, 1, "A tiempo", 0, 0, "")
-        )
-        
-        salida_time = f"{date_str} 23:00:00"
-        c.execute(
-            """INSERT INTO attendance(employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code)
-               VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (jj_id, "Salida", salida_time, base_lat, base_lon, 5.0, 1, "Hora extra 960 min (16h 0m)", 0, 960, "DA 150")
-        )
-
   c.commit()
   c.close()
 
@@ -321,7 +264,9 @@ INDEX_HTML = """
         <span class="navbar-brand mb-0 h1">ASISTENCIA OMMA</span>
         <div id="user-nav" class="text-white"></div>
     </nav>
-    <div class="container" id="app-container"></div>
+    <div class="container" id="app-container">
+        <!-- Contenido dinámico -->
+    </div>
     <script>
     function getDeviceUUID() {
         let name = "device_uuid=";
@@ -329,8 +274,12 @@ INDEX_HTML = """
         let ca = decodedCookie.split(';');
         for(let i = 0; i < ca.length; i++) {
             let c = ca[i];
-            while (c.charAt(0) == ' ') { c = c.substring(1); }
-            if (c.indexOf(name) == 0) { return c.substring(name.length, c.length); }
+            while (c.charAt(0) == ' ') {
+                c = c.substring(1);
+            }
+            if (c.indexOf(name) == 0) {
+                return c.substring(name.length, c.length);
+            }
         }
         let uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
             var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
@@ -360,17 +309,18 @@ INDEX_HTML = """
                     <form onsubmit="doLogin(event)">
                         <div class="mb-3">
                             <label class="form-label">Nombre del Empleado</label>
-                            <input type="text" id="emp-search" class="form-control" placeholder="Escriba su nombre..." autocomplete="off" list="employees-datalist" required>
+                            <input type="text" id="emp-search" class="form-control" placeholder="Escriba su nombre para autocompletar..." autocomplete="off" list="employees-datalist" required>
                             <datalist id="employees-datalist"></datalist>
                         </div>
                         <div class="mb-3">
                             <label class="form-label">Contraseña</label>
-                            <input type="password" id="password" class="form-control" placeholder="Contraseña..." required>
+                            <input type="password" id="password" class="form-control" placeholder="Ingrese su contraseña..." required>
                         </div>
                         <button type="submit" class="btn btn-dark w-100">Ingresar</button>
                     </form>
                 </div>
             </div>`;
+        
         try {
             let res = await fetch('/api/employees/list');
             if (res.ok) {
@@ -380,7 +330,9 @@ INDEX_HTML = """
                     datalist.innerHTML = emps.map(e => `<option value="${e.name}">Área: ${e.area_name || 'N/A'}</option>`).join('');
                 }
             }
-        } catch (e) {}
+        } catch (e) {
+            console.error("No se pudo cargar la lista para autocompletar", e);
+        }
     }
 
     async function doLogin(e) {
@@ -388,14 +340,35 @@ INDEX_HTML = """
         let searchEl = document.getElementById('emp-search');
         let passEl = document.getElementById('password');
         let errorDiv = document.getElementById('login-error');
+        
         if (!searchEl || !passEl) return;
-        let res = await fetch('/api/login', {
-            method: 'POST', headers: {'Content-Type': 'application/json'},
-            body: JSON.stringify({username: searchEl.value.trim(), password: passEl.value.trim(), device_token: getDeviceUUID()})
-        });
-        let data = await res.json();
-        if (res.ok) { loadState(); } 
-        else { errorDiv.innerText = data.error || 'Error'; errorDiv.classList.remove('d-none'); }
+
+        let inputVal = searchEl.value.trim();
+        let p = passEl.value.trim();
+        let deviceToken = getDeviceUUID();
+
+        try {
+            let res = await fetch('/api/login', {
+                method: 'POST', 
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({username: inputVal, password: p, device_token: deviceToken})
+            });
+            let data = await res.json();
+
+            if (res.ok) { 
+                loadState(); 
+            } else { 
+                if (errorDiv) {
+                    errorDiv.innerText = data.error || 'Error de autenticación'; 
+                    errorDiv.classList.remove('d-none'); 
+                } else {
+                    alert(data.error || 'Error de autenticación');
+                }
+            }
+        } catch (err) {
+            console.error("Error en login:", err);
+            alert("Ocurrió un error al conectar con el servidor.");
+        }
     }
 
     async function doLogout() {
@@ -407,11 +380,17 @@ INDEX_HTML = """
         let displayName = data.user.display_name || data.user.username;
         document.getElementById('user-nav').innerHTML = `<span>${displayName}</span> <button class="btn btn-outline-light btn-sm ms-3" onclick="doLogout()">Cerrar sesión</button>`;
         
-        let html = `<div class="card p-4 shadow-sm mb-4"><h2>Panel de Control - Omma Group</h2></div>`;
+        let html = `
+            <div class="card p-4 shadow-sm mb-4">
+                <h2>Panel de Control - Omma Group</h2>
+                <p class="text-muted">Control de doble registro de ubicación (Ingreso y Salida independientes con GPS).</p>
+            </div>`;
+
         if (data.user.role === 'empleado') {
             html += `
                 <div class="card p-4 shadow-sm text-center">
                     <h3>Registro de Asistencia GPS</h3>
+                    <p class="text-muted">Debe realizar de forma independiente el registro de su <strong>Entrada</strong> y su <strong>Salida</strong> (Radio 200m).</p>
                     <div class="my-3">
                         <button class="btn btn-success btn-lg mx-2" onclick="markAttendance('Entrada')">Marcar Entrada</button>
                         <button class="btn btn-danger btn-lg mx-2" onclick="markAttendance('Salida')">Marcar Salida</button>
@@ -421,14 +400,39 @@ INDEX_HTML = """
         } else {
             window.allSysEmployees = data.employees;
             window.allSysAreas = data.areas;
+            
             html += `
                 <div class="card p-3 shadow-sm mb-4">
-                    <h4>Reportes</h4>
+                    <h4>Reportes del Sistema</h4>
                     <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia (Excel)</a>
                 </div>
+                
                 <div class="card p-3 shadow-sm mb-4">
-                    <h4>Empleados Registrados (<span id="emp-count-badge">${data.employees.length}</span>)</h4>
-                    <ul class="list-group list-group-flush" id="employees-list-container" style="max-height: 450px; overflow-y: auto;"></ul>
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h4 class="mb-0">Empleados Registrados (<span id="emp-count-badge">${data.employees.length}</span>)</h4>
+                    </div>
+                    
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-4">
+                            <input type="text" id="filter-search" class="form-control" placeholder="Buscar por nombre o cédula..." oninput="filterEmployees()">
+                        </div>
+                        <div class="col-md-4">
+                            <select id="filter-area" class="form-select" onchange="filterEmployees()">
+                                <option value="">Todas las Áreas</option>
+                                ${data.areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <select id="filter-sort" class="form-select" onchange="filterEmployees()">
+                                <option value="az">Orden Alfabético (A - Z)</option>
+                                <option value="za">Orden Alfabético (Z - A)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <ul class="list-group list-group-flush" id="employees-list-container" style="max-height: 450px; overflow-y: auto;">
+                        <!-- Renderizado dinámico -->
+                    </ul>
                 </div>`;
             setTimeout(filterEmployees, 50);
         }
@@ -437,35 +441,86 @@ INDEX_HTML = """
 
     function filterEmployees() {
         if (!window.allSysEmployees) return;
+        let search = document.getElementById('filter-search').value.toLowerCase();
+        let areaId = document.getElementById('filter-area').value;
+        let sortOrder = document.getElementById('filter-sort').value;
+
+        let filtered = window.allSysEmployees.filter(e => {
+            let matchSearch = e.name.toLowerCase().includes(search) || (e.document && e.document.includes(search));
+            let matchArea = areaId === "" || e.area_id == areaId;
+            return matchSearch && matchArea;
+        });
+
+        filtered.sort((a, b) => {
+            if (sortOrder === 'az') return a.name.localeCompare(b.name);
+            if (sortOrder === 'za') return b.name.localeCompare(a.name);
+            return 0;
+        });
+
         let container = document.getElementById('employees-list-container');
-        if (!container) return;
-        container.innerHTML = window.allSysEmployees.map(e => `
+        document.getElementById('emp-count-badge').innerText = filtered.length;
+
+        if (filtered.length === 0) {
+            container.innerHTML = '<li class="list-group-item text-center text-muted">No se encontraron empleados</li>';
+            return;
+        }
+
+        container.innerHTML = filtered.map(e => `
             <li class="list-group-item d-flex justify-content-between align-items-center">
-                <div><strong>${e.name}</strong><br><small class="text-muted">Doc: ${e.document || 'N/A'}</small></div>
-                <span class="badge bg-primary">${e.area_name || 'Sin área'}</span>
+                <div>
+                    <strong>${e.name}</strong><br>
+                    <small class="text-muted">Doc: ${e.document || 'N/A'}</small>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    <span class="badge bg-primary">${e.area_name || 'Sin área'}</span>
+                    <span class="badge bg-secondary">${e.site_name || 'Sin sede'}</span>
+                    ${e.user_id ? `<button class="btn btn-outline-warning btn-sm" onclick="resetDevice(${e.user_id})">Reiniciar Celular</button>` : ''}
+                </div>
             </li>`).join('');
+    }
+
+    async function resetDevice(userId) {
+        if (!confirm('¿Está seguro de desvincular el dispositivo de este empleado?')) return;
+        let res = await fetch(`/api/admin/reset-device/${userId}`, {method: 'POST'});
+        if (res.ok) {
+            alert('Dispositivo desvinculado con éxito.');
+            loadState();
+        } else {
+            let data = await res.json();
+            alert(data.error || 'Error al desvincular dispositivo');
+        }
     }
 
     async function markAttendance(type) {
         if (!navigator.geolocation) { alert('Geolocalización no soportada'); return; }
+        
         let projectCode = '';
         if (type === 'Salida') {
-            let inputCode = prompt('Ingrese el Código de Proyecto Ej: DA 149', '');
+            let inputCode = prompt('Ingrese el Código del o los Proyectos en los que Laboró Ej: DA 149', '');
             if (inputCode === null) return;
             projectCode = inputCode.trim().toUpperCase();
+            let regex = /^[A-Z]{2}\s?\d{3}$/;
+            if (!regex.test(projectCode)) {
+                alert('Formato de código de proyecto inválido. Debe ser 2 letras y 3 números (Ej: DA 149).');
+                return;
+            }
         }
+
         navigator.geolocation.getCurrentPosition(async pos => {
+            let lat = pos.coords.latitude;
+            let lon = pos.coords.longitude;
             let res = await fetch('/api/mark', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({event_type: type, latitude: pos.coords.latitude, longitude: pos.coords.longitude, project_code: projectCode})
+                body: JSON.stringify({event_type: type, latitude: lat, longitude: lon, project_code: projectCode})
             });
             let data = await res.json();
             if (res.ok) {
-                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">Registrado a las ${data.time} - ${data.status}</div>`;
+                let projText = projectCode ? ` | Proyecto: ${projectCode}` : '';
+                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">Ubicación GPS registrada para ${type} a las ${data.time}${projText} - Estado: ${data.status}</div>`;
             } else {
                 document.getElementById('mark-result').innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
             }
-        }, err => { alert('GPS requerido: ' + err.message); }, { enableHighAccuracy: true });
+        }, err => { alert('Para marcar ' + type + ' es obligatorio permitir el acceso a la ubicación GPS: ' + err.message); }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
     }
 
     loadState();
@@ -513,8 +568,15 @@ def login():
 
   matched_user = None
   input_norm = strip_accents(login_input).lower()
+
   for r in rows:
-    if input_norm == strip_accents(r["emp_name"]).lower() or input_norm == strip_accents(r["username"]).lower():
+    uname = (r["username"] or "").strip()
+    ename = (r["emp_name"] or "").strip()
+    edoc = (r["emp_doc"] or "").strip()
+
+    if input_norm == strip_accents(ename).lower() or input_norm == strip_accents(
+        uname
+    ).lower():
       if r["password_hash"] == p_hash:
         matched_user = dict(r)
         break
@@ -526,15 +588,36 @@ def login():
     c = db()
     if not matched_user["device_token"]:
       if client_device_token:
-        c.execute("UPDATE users SET device_token = ? WHERE id = ?", (client_device_token, matched_user["id"]))
+        c.execute(
+            "UPDATE users SET device_token = ? WHERE id = ?",
+            (client_device_token, matched_user["id"]),
+        )
         c.commit()
+        matched_user["device_token"] = client_device_token
     elif matched_user["device_token"] != client_device_token:
       c.close()
-      return jsonify(error="Dispositivo vinculado a otro equipo."), 403
+      return jsonify(
+          error=(
+              "Este usuario ya está vinculado a otro dispositivo móvil."
+              " Contacte al administrador para reiniciar el dispositivo."
+          )
+      ), 403
     c.close()
 
   session["uid"] = matched_user["id"]
   return jsonify(user=matched_user)
+
+
+@app.post("/api/admin/reset-device/<int:user_id>")
+def reset_device(user_id):
+  u = current_user()
+  if not u or u["role"] != "administrador":
+    return jsonify(error="No autorizado"), 403
+  c = db()
+  c.execute("UPDATE users SET device_token = NULL WHERE id = ?", (user_id,))
+  c.commit()
+  c.close()
+  return jsonify(ok=True)
 
 
 @app.post("/api/logout")
@@ -550,13 +633,58 @@ def state():
     return jsonify(error="No autenticado"), 401
   c = db()
   cid = u["company_id"]
-  companies = [dict(x) for x in c.execute("SELECT * FROM companies WHERE id=?", (cid,))]
-  sites = [dict(x) for x in c.execute("SELECT * FROM sites WHERE company_id=?", (cid,))]
-  schedules = [dict(x) for x in c.execute("SELECT * FROM schedules WHERE company_id=?", (cid,))]
-  areas = [dict(x) for x in c.execute("SELECT a.*, s.name schedule_name FROM areas a LEFT JOIN schedules s ON s.id=a.schedule_id WHERE a.company_id=?", (cid,))]
-  employees = [dict(x) for x in c.execute("SELECT e.*,s.name site_name,h.name schedule_name, ar.name area_name, u.id as user_id, u.device_token FROM employees e LEFT JOIN sites s ON s.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id LEFT JOIN areas ar ON ar.id=e.area_id LEFT JOIN users u ON u.employee_id=e.id WHERE e.company_id=? ORDER BY e.name ASC", (cid,))]
+  companies = [
+      dict(x) for x in c.execute("SELECT * FROM companies WHERE id=?", (cid,))
+  ]
+  sites = [
+      dict(x) for x in c.execute("SELECT * FROM sites WHERE company_id=?", (cid,))
+  ]
+  schedules = [
+      dict(x)
+      for x in c.execute("SELECT * FROM schedules WHERE company_id=?", (cid,))
+  ]
+  areas = [
+      dict(x)
+      for x in c.execute(
+          """
+        SELECT a.*, s.name schedule_name, s.mon, s.tue, s.wed, s.thu, s.fri, s.sat, s.sun 
+        FROM areas a LEFT JOIN schedules s ON s.id=a.schedule_id WHERE a.company_id=?
+    """,
+          (cid,),
+      )
+  ]
+  employees = [
+      dict(x)
+      for x in c.execute(
+          """SELECT e.*,s.name site_name,h.name schedule_name, ar.name area_name, u.id as user_id, u.device_token FROM employees e LEFT JOIN sites s ON s.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id LEFT JOIN areas ar ON ar.id=e.area_id LEFT JOIN users u ON u.employee_id=e.id WHERE e.company_id=? ORDER BY e.name ASC""",
+          (cid,),
+      )
+  ]
+  attendance = [
+      dict(x)
+      for x in c.execute(
+          """SELECT a.*,e.name employee_name FROM attendance a JOIN employees e ON e.id=a.employee_id WHERE e.company_id=? ORDER BY a.id DESC LIMIT 100""",
+          (cid,),
+      )
+  ]
+  incidents = [
+      dict(x)
+      for x in c.execute(
+          """SELECT i.*,e.name employee_name FROM incidents i JOIN employees e ON e.id=i.employee_id WHERE e.company_id=? ORDER BY i.id DESC""",
+          (cid,),
+      )
+  ]
   c.close()
-  return jsonify(companies=companies, sites=sites, schedules=schedules, areas=areas, employees=employees, user=u)
+  return jsonify(
+      companies=companies,
+      sites=sites,
+      schedules=schedules,
+      areas=areas,
+      employees=employees,
+      attendance=attendance,
+      incidents=incidents,
+      user=u,
+  )
 
 
 @app.post("/api/mark")
@@ -564,7 +692,7 @@ def mark():
   try:
     u = current_user()
     if not u or u["role"] != "empleado" or not u["employee_id"]:
-      return jsonify(error="No autorizado"), 403
+      return jsonify(error="Solo un empleado autenticado puede marcar"), 403
 
     d = request.json or {}
     typ = d.get("event_type")
@@ -574,36 +702,163 @@ def mark():
 
     if typ not in ("Entrada", "Salida"):
       return jsonify(error="Tipo inválido"), 400
+
     if lat is None or lon is None:
-      return jsonify(error="Ubicación GPS obligatoria"), 400
+      return jsonify(
+          error=(
+              f"La ubicación GPS es obligatoria para registrar la {typ.lower()}."
+          )
+      ), 400
+
     if typ == "Salida" and not project_code:
-      return jsonify(error="Código de proyecto obligatorio"), 400
+      return jsonify(
+          error="El código de proyecto es obligatorio al marcar salida."
+      ), 400
 
     dt = datetime.now(COLOMBIA_TZ)
+    today_str = dt.date().isoformat()
+
     c = db()
-    row = c.execute("SELECT e.*, si.latitude site_lat, si.longitude site_lon, si.radius_m, h.mon FROM employees e LEFT JOIN sites si ON si.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id WHERE e.id=?", (u["employee_id"],)).fetchone()
-    
+    existing_mark = c.execute(
+        """SELECT id FROM attendance 
+           WHERE employee_id = ? AND event_type = ? AND DATE(event_time) = ?""",
+        (u["employee_id"], typ, today_str),
+    ).fetchone()
+
+    if existing_mark:
+      c.close()
+      return jsonify(
+          error=(
+              f"Ya ha registrado su ubicación de {typ} el día de hoy. No se"
+              " permiten registros duplicados del mismo evento."
+          )
+      ), 400
+
+    row = c.execute(
+        """SELECT e.*, si.latitude site_lat, si.longitude site_lon, si.radius_m, 
+                            COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
+                            COALESCE(ar_sch.wed, h.wed) wed, COALESCE(ar_sch.thu, h.thu) thu, 
+                            COALESCE(ar_sch.fri, h.fri) fri, COALESCE(ar_sch.sat, h.sat) sat, 
+                            COALESCE(ar_sch.sun, h.sun) sun,
+                            COALESCE(ar_sch.tolerance_minutes, h.tolerance_minutes) tolerance_minutes
+                            FROM employees e
+                            LEFT JOIN sites si ON si.id=e.site_id 
+                            LEFT JOIN schedules h ON h.id=e.schedule_id 
+                            LEFT JOIN areas ar ON ar.id=e.area_id
+                            LEFT JOIN schedules ar_sch ON ar_sch.id=ar.schedule_id
+                            WHERE e.id=? AND e.company_id=?""",
+        (u["employee_id"], u["company_id"]),
+    ).fetchone()
+
+    if not row:
+      c.close()
+      return jsonify(error="Empleado no encontrado"), 404
+
     dist = 0.0
     valid = True
-    if row["site_lat"] is not None:
-      dist = hav(float(lat), float(lon), float(row["site_lat"]), float(row["site_lon"]))
-      valid = dist <= (row["radius_m"] or 200)
+
+    if row["site_lat"] is not None and row["site_lon"] is not None:
+      try:
+        dist = hav(
+            float(lat),
+            float(lon),
+            float(row["site_lat"]),
+            float(row["site_lon"]),
+        )
+        radius = row["radius_m"] if row["radius_m"] is not None else 200
+        valid = dist <= radius
+      except Exception as e:
+        print(f"Aviso cálculo GPS: {e}")
 
     status = "Registrada"
+    late = 0
     extra_mins = 0
-    if typ == "Salida":
-      extra_mins = 120 # Simulación de exceso
+
+    days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    day_key = days[dt.weekday()]
+    period = row[day_key] if day_key in row.keys() else ""
+
+    if typ == "Entrada" and period:
+      start = int(period[:2]) * 60 + int(period[3:5])
+      actual = dt.hour * 60 + dt.minute
+      late = max(0, actual - start - int(row["tolerance_minutes"] or 0))
+      if late == 0:
+        status = "A tiempo"
+      else:
+        h_late = late // 60
+        m_late = late % 60
+        status = f"Retardo {late} min ({h_late}h {m_late}m)"
+
+    elif typ == "Salida" and period:
+      end = int(period[6:8]) * 60 + int(period[9:11])
+      actual = dt.hour * 60 + dt.minute
+      diff = actual - end
+      if diff < 0:
+        early_mins = abs(diff)
+        h_early = early_mins // 60
+        m_early = early_mins % 60
+        status = f"Salida anticipada {early_mins} min ({h_early}h {m_early}m antes)"
+      elif diff > 0:
+        extra_mins = diff
+        h_extra = extra_mins // 60
+        m_extra = extra_mins % 60
+        status = f"Hora extra {extra_mins} min ({h_extra}h {m_extra}m)"
+      else:
+        status = "A tiempo"
+
+    if not valid:
+      status = f"{status} (Fuera de zona a {dist:.0f}m)"
 
     cur = c.execute(
-        """INSERT INTO attendance(employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code)
-           VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
-        (u["employee_id"], typ, dt.isoformat(timespec="seconds"), lat, lon, dist, int(valid), status, 0, extra_mins, project_code)
+        """INSERT INTO
+        attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes,overtime_minutes,project_code)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            u["employee_id"],
+            typ,
+            dt.isoformat(timespec="seconds"),
+            lat,
+            lon,
+            dist,
+            int(valid),
+            status,
+            late,
+            extra_mins,
+            project_code,
+        ),
     )
+
+    emp_info = c.execute(
+        "SELECT name, document FROM employees WHERE id=?", (u["employee_id"],)
+    ).fetchone()
     c.commit()
     c.close()
-    return jsonify(id=cur.lastrowid, time=dt.strftime("%I:%M%p"), status=status)
+
+    if emp_info:
+      try:
+        sync_to_sheets(
+            emp_info["name"],
+            emp_info["document"],
+            typ,
+            dt.strftime("%Y-%m-%d %H:%M:%S"),
+            status,
+            late,
+            project_code,
+        )
+      except Exception as sheet_err:
+        print(f"Aviso Google Sheets: {sheet_err}")
+
+    time_ampm = dt.strftime("%I:%M%p")
+    return jsonify(
+        id=cur.lastrowid,
+        time=time_ampm,
+        status=status,
+        gps_valid=valid,
+        late_minutes=late,
+        project_code=project_code,
+    )
   except Exception as e:
-    return jsonify(error=str(e)), 500
+    return jsonify(error=f"Excepción interna: {str(e)}"), 500
 
 
 @app.get("/api/report/csv")
@@ -613,22 +868,19 @@ def export_csv():
     return jsonify(error="No autorizado"), 403
 
   c = db()
-  rows = c.execute("""
+  rows = c.execute(
+      """
         SELECT a.id, e.id as emp_id, e.name as employee_name, e.document, s.name as site_name, ar.name as area_name,
-               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code,
-               COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
-               COALESCE(ar_sch.wed, h.wed) wed, COALESCE(ar_sch.thu, h.thu) thu, 
-               COALESCE(ar_sch.fri, h.fri) fri, COALESCE(ar_sch.sat, h.sat) sat, 
-               COALESCE(ar_sch.sun, h.sun) sun
+               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code
         FROM attendance a 
         JOIN employees e ON e.id = a.employee_id 
         LEFT JOIN sites s ON s.id = e.site_id 
-        LEFT JOIN schedules h ON h.id = e.schedule_id 
         LEFT JOIN areas ar ON ar.id = e.area_id
-        LEFT JOIN schedules ar_sch ON ar_sch.id = ar.schedule_id
         WHERE e.company_id = ? 
         ORDER BY a.event_time ASC
-    """, (u["company_id"],)).fetchall()
+    """,
+      (u["company_id"],),
+  ).fetchall()
   c.close()
 
   daily_records = {}
@@ -637,15 +889,14 @@ def export_csv():
     try:
       dt_obj = datetime.fromisoformat(dt_str)
     except Exception:
-      continue
+      try:
+        dt_obj = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+      except Exception:
+        continue
 
     date_key = dt_obj.strftime("%Y-%m-%d")
     emp_id = r["emp_id"]
     key = (emp_id, date_key)
-
-    days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
-    day_col = days[dt_obj.weekday()]
-    period = r[day_col] or ""
 
     if key not in daily_records:
       daily_records[key] = {
@@ -654,14 +905,11 @@ def export_csv():
           "area_name": r["area_name"],
           "site_name": r["site_name"],
           "date": dt_obj.strftime("%d-%b-%Y").lower(),
-          "date_obj": dt_obj.date(),
-          "period": period,
           "entrada": None,
           "salida": None,
       }
 
     event_info = {
-        "time_obj": dt_obj,
         "time": dt_obj.strftime("%I:%M:%S %p").lower(),
         "lat": r["latitude"],
         "lon": r["longitude"],
@@ -681,15 +929,12 @@ def export_csv():
   ws = wb.active
   ws.title = "Reporte Asistencia"
 
-  # Encabezados con discriminación independiente para Dominicales y Festivos
   headers = [
       "Empleado",
       "Documento",
       "Área",
       "Sede",
       "Fecha",
-      "Es Domingo?",
-      "Es Festivo?",
       "Entrada - Hora",
       "Entrada - GPS",
       "Entrada - Distancia (m)",
@@ -700,77 +945,42 @@ def export_csv():
       "Salida - Proyecto",
       "Salida - Estado",
       "Minutos Retardo",
-      "H.E. Diurna (HED)",
-      "H.E. Nocturna (HEN)",
-      "H.E. Diurna Dominical (HEDD)",
-      "H.E. Nocturna Dominical (HEND)",
-      "H.E. Diurna Festiva (HEDF)",
-      "H.E. Nocturna Festiva (HENF)",
+      "Total Extras",
   ]
   ws.append(headers)
 
-  for key, rec in sorted(daily_records.items(), key=lambda x: (x[0][1], x[1]["employee_name"])):
+  for key, rec in sorted(
+      daily_records.items(), key=lambda x: (x[0][1], x[1]["employee_name"])
+  ):
     ent = rec["entrada"] or {}
     sal = rec["salida"] or {}
-    period = rec["period"]
-    d_obj = rec["date_obj"]
 
-    # Discriminación independiente
-    is_dom = es_domingo(d_obj)
-    is_fes = es_festivo(d_obj)
+    ent_maps = ""
+    if ent.get("lat") is not None and ent.get("lon") is not None:
+      try:
+        ent_maps = (
+            f'=HYPERLINK("https://www.google.com/maps?q={float(ent["lat"])},'
+            f'{float(ent["lon"])}", "Ver Entrada")'
+        )
+      except Exception:
+        pass
 
-    hed, hen, hedd, hend, hedf, henf = 0, 0, 0, 0, 0, 0
+    sal_maps = ""
+    if sal.get("lat") is not None and sal.get("lon") is not None:
+      try:
+        sal_maps = (
+            f'=HYPERLINK("https://www.google.com/maps?q={float(sal["lat"])},'
+            f'{float(sal["lon"])}", "Ver Salida")'
+        )
+      except Exception:
+        pass
 
-    if ent.get("time_obj") and sal.get("time_obj"):
-      if is_dom or is_fes or not period:
-        inicio_extra = ent["time_obj"]
-      else:
-        try:
-          end_time_str = period.split("-")[1]
-          end_h, end_m = map(int, end_time_str.split(":"))
-          shift_end_obj = datetime.combine(d_obj, datetime.min.time(), tzinfo=ent["time_obj"].tzinfo) + timedelta(hours=end_h, minutes=end_m)
-        except Exception:
-          shift_end_obj = ent["time_obj"] + timedelta(hours=8)
-        inicio_extra = max(ent["time_obj"], shift_end_obj)
-
-      fin_extra = sal["time_obj"]
-
-      if fin_extra > inicio_extra:
-        current = inicio_extra
-        while current < fin_extra:
-          hour = current.hour
-          is_night = hour >= 19 or hour < 6
-
-          if is_fes:
-            # Festivo (prioridad sobre domingo si coincide)
-            if is_night:
-              henf += 1
-            else:
-              hedf += 1
-          elif is_dom:
-            # Domingo (Dominical)
-            if is_night:
-              hend += 1
-            else:
-              hedd += 1
-          else:
-            # Día ordinario
-            if is_night:
-              hen += 1
-            else:
-              hed += 1
-
-          current += timedelta(minutes=1)
-
-    hed_h = round(hed / 60, 2)
-    hen_h = round(hen / 60, 2)
-    hedd_h = round(hedd / 60, 2)
-    hend_h = round(hend / 60, 2)
-    hedf_h = round(hedf / 60, 2)
-    henf_h = round(henf / 60, 2)
-
-    ent_maps = f'=HYPERLINK("https://www.google.com/maps?q={ent.get("lat")},{ent.get("lon")}", "Ver Entrada")' if ent.get("lat") else ""
-    sal_maps = f'=HYPERLINK("https://www.google.com/maps?q={sal.get("lat")},{sal.get("lon")}", "Ver Salida")' if sal.get("lat") else ""
+    ent_dist = (
+        int(round(ent["distance"])) if ent.get("distance") is not None else ""
+    )
+    sal_dist = (
+        int(round(sal["distance"])) if sal.get("distance") is not None else ""
+    )
 
     row_data = [
         rec["employee_name"],
@@ -778,24 +988,17 @@ def export_csv():
         rec["area_name"] or "",
         rec["site_name"] or "",
         rec["date"],
-        "SÍ" if is_dom else "NO",
-        "SÍ" if is_fes else "NO",
         ent.get("time", ""),
         ent_maps,
-        int(round(ent["distance"])) if ent.get("distance") is not None else "",
+        ent_dist,
         ent.get("status", ""),
         sal.get("time", ""),
         sal_maps,
-        int(round(sal["distance"])) if sal.get("distance") is not None else "",
+        sal_dist,
         sal.get("project_code", ""),
         sal.get("status", ""),
         int(ent.get("late", 0) or 0),
-        hed_h,
-        hen_h,
-        hedd_h,
-        hend_h,
-        hedf_h,
-        henf_h,
+        int(sal.get("overtime", 0) or 0),
     ]
     ws.append(row_data)
 
@@ -804,8 +1007,12 @@ def export_csv():
   file_stream.seek(0)
 
   output = make_response(file_stream.getvalue())
-  output.headers["Content-Disposition"] = "attachment; filename=reporte_asistencia.xlsx"
-  output.headers["Content-Type"] = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  output.headers["Content-Disposition"] = (
+      "attachment; filename=reporte_asistencia.xlsx"
+  )
+  output.headers["Content-Type"] = (
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  )
   return output
 
 
