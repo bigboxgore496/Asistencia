@@ -861,6 +861,21 @@ def mark():
     return jsonify(error=f"Excepción interna: {str(e)}"), 500
 
 
+@app.get("/api/test/registers")
+def test_registers():
+  c = db()
+  rows = c.execute("""
+        SELECT a.id, e.name as employee_name, a.event_type, a.event_time, 
+               a.latitude, a.longitude, a.distance_m, a.gps_valid, 
+               a.status, a.late_minutes, a.overtime_minutes, a.project_code
+        FROM attendance a
+        JOIN employees e ON e.id = a.employee_id
+        ORDER BY a.id DESC
+    """).fetchall()
+  c.close()
+  return jsonify([dict(r) for r in rows])
+
+
 @app.get("/api/report/csv")
 def export_csv():
   u = current_user()
