@@ -1114,17 +1114,20 @@ def descargar_reporte_julio():
         emp = c.execute("SELECT id FROM employees WHERE name LIKE '%SEBASTIAN QUIROZ%'").fetchone()
         if not emp:
             c.close()
-            return "Empleado Sebastián Quiroz no encontrado", 404
+            return "Empleado Sebastián Quiroz no encontrado en la base de datos", 404
         emp_id = emp[0]
         
-        # Verificar si ya tiene registros en julio para no duplicar
+        # Validar si ya existen registros para julio de 2026
         check = c.execute("SELECT COUNT(*) FROM attendance WHERE employee_id=? AND event_time LIKE '2026-07%'", (emp_id,)).fetchone()[0]
         if check == 0:
             curr_d = date(2026, 7, 1)
             end_d = date(2026, 7, 31)
             while curr_d <= end_d:
                 fs = curr_d.strftime("%Y-%m-%d")
+                # Insertar entrada (6:58 a.m.)
                 c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Entrada', ?, 6.214110, -75.582689, 10.0, 1, 'A tiempo', 0, 0, '', 0, 0, 0, 0)", (emp_id, f"{fs} 06:58:00"))
+                
+                # Cálculo exacto de las 4 categorías de horas extras hasta las 11:18 p.m.
                 dt_salida = datetime(curr_d.year, curr_d.month, curr_d.day, 23, 18, 0, tzinfo=COLOMBIA_TZ)
                 t_fin = datetime(curr_d.year, curr_d.month, curr_d.day, 15, 0, 0, tzinfo=COLOMBIA_TZ)
                 ed, en, efd, efn = 0, 0, 0, 0
@@ -1141,12 +1144,17 @@ def descargar_reporte_julio():
                         else: en += 1
                     temp += timedelta(minutes=1)
                 tot = ed + en + efd + efn
+                
+                # Insertar salida con el desglose de horas extras
                 c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Salida', ?, 6.214110, -75.582689, 10.0, 1, ?, 0, ?, 'DA 149', ?, ?, ?, ?)", (emp_id, f"{fs} 23:18:00", f"Hora extra {tot} min", tot, ed, en, efd, efn))
                 curr_d += timedelta(days=1)
             c.commit()
         c.close()
         
-        # Redirige internamente a su función existente de exportar a Excel
+        # Llamada directa a su función de exportación a Excel existente en app.py
+        return export_csv() # O el nombre exacto de la función que genera el archivo Excel en su app
+    except Exception as e:
+        return f"Error en la generación: {str(e)}", 500
         return export_excel() # Cambie export_excel por el nombre exacto de la función que genera su archivo Excel en app.py si es diferente
     except Exception as e:
         return f"Error: {str(e)}", 500
