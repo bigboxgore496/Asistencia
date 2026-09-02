@@ -1,4 +1,4 @@
-from datetime import datetime, date
+from datetime import datetime, date, time, timedelta
 import hashlib
 import io
 import math
@@ -15,6 +15,7 @@ from flask import (
     session,
 )
 import gspread
+import holidays
 import openpyxl
 import sqlite3
 
@@ -22,6 +23,7 @@ app = Flask(__name__)
 app.secret_key = secrets.token_hex(32)
 DB = Path(__file__).with_name("asistencia.db")
 COLOMBIA_TZ = ZoneInfo("America/Bogota")
+CO_HOLIDAYS = holidays.Colombia()
 
 
 def db():
@@ -41,6 +43,47 @@ def strip_accents(text):
   return "".join(
       c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
   )
+
+
+def es_domingo_o_festivo(fecha):
+  return fecha.weekday() == 6 or fecha in CO_HOLIDAYS
+
+
+def calcular_horas_extras_discriminadas(dt_inicio, dt_fin):
+  """
+  Calcula y discrimina los minutos exactos en los 4 rangos requeridos:
+  - Extra diurna (6:00 a.m. - 7:00 p.m., día hábil)
+  - Extra nocturna (7:00 p.m. - 6:00 a.m., día hábil)
+  - Extra dominical/festiva diurna (6:00 a.m. - 7:00 p.m.)
+  - Extra dominical/festiva nocturna (7:00 p.m. - 6:00 a.m.)
+  """
+  resultado = {
+      "extra_diurna": 0,
+      "extra_nocturna": 0,
+      "extra_festiva_diurna": 0,
+      "extra_festiva_nocturna": 0
+  }
+  
+  current = dt_inicio
+  while current < dt_fin:
+    t = current.time()
+    es_fest_dom = es_domingo_o_festivo(current.date())
+    es_diurna = time(6, 0) <= t < time(19, 0)
+    
+    if es_fest_dom:
+      if es_diurna:
+        resultado["extra_festiva_diurna"] += 1
+      else:
+        resultado["extra_festiva_nocturna"] += 1
+    else:
+      if es_diurna:
+        resultado["extra_diurna"] += 1
+      else:
+        resultado["extra_nocturna"] += 1
+        
+    current += timedelta(minutes=1)
+    
+  return resultado
 
 
 def init_db():
@@ -67,6 +110,14 @@ def init_db():
     c.commit()
   except Exception:
     pass
+
+  # Migraciones para columnas de horas extras discriminadas en minutos
+  for col_name in ["extra_diurna_mins", "extra_nocturna_mins", "extra_festiva_diurna_mins", "extra_festiva_nocturna_mins"]:
+    try:
+      c.execute(f"ALTER TABLE attendance ADD COLUMN {col_name} INTEGER DEFAULT 0")
+      c.commit()
+    except Exception:
+      pass
 
   if c.execute("SELECT COUNT(*) FROM companies").fetchone()[0] == 0:
     cur = c.execute("INSERT INTO companies(name) VALUES(?)", ("Omma Group",))
@@ -773,6 +824,7 @@ def mark():
     status = "Registrada"
     late = 0
     extra_mins = 0
+    ed_mins, en_mins, efd_mins, efn_mins = 0, 0, 0, 0
 
     days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
     day_key = days[dt.weekday()]
@@ -791,6 +843,10 @@ def mark():
 
     elif typ == "Salida" and period:
       end = int(period[6:8]) * 60 + int(period[9:11])
+      
+      # Construir objeto datetime para la hora de fin oficial del turno
+      end_dt = dt.replace(hour=int(period[6:8]), minute=int(period[9:11]), second=0, microsecond=0)
+      
       actual = dt.hour * 60 + dt.minute
       diff = actual - end
       if diff < 0:
@@ -803,6 +859,13 @@ def mark():
         h_extra = extra_mins // 60
         m_extra = extra_mins % 60
         status = f"Hora extra {extra_mins} min ({h_extra}h {m_extra}m)"
+        
+        # Calcular discriminación minuto a minuto desde el fin del turno hasta el momento actual de salida
+        desglose = calcular_horas_extras_discriminadas(end_dt, dt)
+        ed_mins = desglose["extra_diurna"]
+        en_mins = desglose["extra_nocturna"]
+        efd_mins = desglose["extra_festiva_diurna"]
+        efn_mins = desglose["extra_festiva_nocturna"]
       else:
         status = "A tiempo"
 
@@ -811,8 +874,8 @@ def mark():
 
     cur = c.execute(
         """INSERT INTO
-        attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes,overtime_minutes,project_code)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?)""",
+        attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes,overtime_minutes,project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             u["employee_id"],
             typ,
@@ -825,6 +888,10 @@ def mark():
             late,
             extra_mins,
             project_code,
+            ed_mins,
+            en_mins,
+            efd_mins,
+            efn_mins,
         ),
     )
 
@@ -871,7 +938,8 @@ def export_csv():
   rows = c.execute(
       """
         SELECT a.id, e.id as emp_id, e.name as employee_name, e.document, s.name as site_name, ar.name as area_name,
-               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code
+               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code,
+               a.extra_diurna_mins, a.extra_nocturna_mins, a.extra_festiva_diurna_mins, a.extra_festiva_nocturna_mins
         FROM attendance a 
         JOIN employees e ON e.id = a.employee_id 
         LEFT JOIN sites s ON s.id = e.site_id 
@@ -918,6 +986,10 @@ def export_csv():
         "late": r["late_minutes"],
         "overtime": r["overtime_minutes"],
         "project_code": r["project_code"],
+        "extra_diurna_mins": r["extra_diurna_mins"] or 0,
+        "extra_nocturna_mins": r["extra_nocturna_mins"] or 0,
+        "extra_festiva_diurna_mins": r["extra_festiva_diurna_mins"] or 0,
+        "extra_festiva_nocturna_mins": r["extra_festiva_nocturna_mins"] or 0,
     }
 
     if r["event_type"] == "Entrada":
@@ -945,7 +1017,11 @@ def export_csv():
       "Salida - Proyecto",
       "Salida - Estado",
       "Minutos Retardo",
-      "Total Extras",
+      "Total Extras (min)",
+      "Extra Diurna (Horas)",
+      "Extra Nocturna (Horas)",
+      "Extra Festiva Diurna (Horas)",
+      "Extra Festiva Nocturna (Horas)"
   ]
   ws.append(headers)
 
@@ -982,6 +1058,12 @@ def export_csv():
         int(round(sal["distance"])) if sal.get("distance") is not None else ""
     )
 
+    # Conversión de minutos acumulados a horas decimales para el reporte
+    ed_h = round(sal.get("extra_diurna_mins", 0) / 60.0, 2)
+    en_h = round(sal.get("extra_nocturna_mins", 0) / 60.0, 2)
+    efd_h = round(sal.get("extra_festiva_diurna_mins", 0) / 60.0, 2)
+    efn_h = round(sal.get("extra_festiva_nocturna_mins", 0) / 60.0, 2)
+
     row_data = [
         rec["employee_name"],
         str(rec["document"] or ""),
@@ -999,6 +1081,10 @@ def export_csv():
         sal.get("status", ""),
         int(ent.get("late", 0) or 0),
         int(sal.get("overtime", 0) or 0),
+        ed_h,
+        en_h,
+        efd_h,
+        efn_h
     ]
     ws.append(row_data)
 
