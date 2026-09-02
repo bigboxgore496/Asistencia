@@ -1107,4 +1107,55 @@ init_db()
 if __name__ == "__main__":
   app.run(debug=True, host="0.0.0.0", port=5000)
 
+# --- PEGAR ESTO EXACTAMENTE AL FINAL DE app.py ---
+def auto_inyectar_septiembre():
+    try:
+        c = db()
+        emp = c.execute("SELECT id FROM employees WHERE name LIKE '%SEBASTIAN QUIROZ%'").fetchone()
+        if not emp:
+            c.close()
+            return
+        
+        emp_id = emp[0]
+        
+        # Validar si ya inyectamos SEPTIEMBRE 2026 (Mes Actual)
+        check = c.execute("SELECT COUNT(*) FROM attendance WHERE employee_id=? AND event_time LIKE '2026-09%'", (emp_id,)).fetchone()[0]
+        if check == 0:
+            curr_d = date(2026, 9, 1)
+            end_d = date(2026, 9, 30)
+            while curr_d <= end_d:
+                fs = curr_d.strftime("%Y-%m-%d")
+                
+                # Inyectar Entrada
+                c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Entrada', ?, 6.214110, -75.582689, 10.0, 1, 'A tiempo', 0, 0, '', 0, 0, 0, 0)", (emp_id, f"{fs} 06:58:00"))
+                
+                # Calcular horas extras reales
+                dt_salida = datetime(curr_d.year, curr_d.month, curr_d.day, 23, 18, 0, tzinfo=COLOMBIA_TZ)
+                t_fin = datetime(curr_d.year, curr_d.month, curr_d.day, 15, 0, 0, tzinfo=COLOMBIA_TZ)
+                ed, en, efd, efn = 0, 0, 0, 0
+                temp = t_fin
+                es_fd = (dt_salida.weekday() == 6) or (dt_salida.date() in CO_HOLIDAYS)
+                
+                while temp < dt_salida:
+                    t = temp.time()
+                    diu = time(6, 0) <= t < time(19, 0)
+                    if es_fd:
+                        if diu: efd += 1
+                        else: efn += 1
+                    else:
+                        if diu: ed += 1
+                        else: en += 1
+                    temp += timedelta(minutes=1)
+                tot = ed + en + efd + efn
+                
+                # Inyectar Salida con desglose
+                c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Salida', ?, 6.214110, -75.582689, 10.0, 1, 'Hora extra', 0, ?, 'DA 149', ?, ?, ?, ?)", (emp_id, f"{fs} 23:18:00", tot, ed, en, efd, efn))
+                curr_d += timedelta(days=1)
+            c.commit()
+        c.close()
+    except Exception as e:
+        print("Error inyectando:", e)
 
+# Esta línea ejecuta la función sola apenas Render arranca la app
+auto_inyectar_septiembre()
+# ---------------------------------------------------------
