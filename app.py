@@ -964,7 +964,7 @@ def export_csv():
         )
       except Exception:
         pass
-
+ 
     sal_maps = ""
     if sal.get("lat") is not None and sal.get("lon") is not None:
       try:
