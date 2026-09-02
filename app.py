@@ -1,4 +1,4 @@
-rom datetime import timedelta
+from datetime import timedelta
 
 def es_festivo_colombia(fecha):
     fijos = [(1, 1), (5, 1), (7, 20), (8, 7), (12, 8), (12, 25)]
