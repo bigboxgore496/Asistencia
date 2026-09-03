@@ -1137,3 +1137,40 @@ init_db()
 
 if __name__ == "__main__":
   app.run(debug=True, host="0.0.0.0", port=5000)
+
+
+#OTRAS FUNCIONES 
+
+@app.get("/api/admin/sites")
+def admin_get_sites():
+    u = current_user()
+    if not u or u["role"] != "administrador":
+        return jsonify(error="No autorizado"), 403
+    c = db()
+    sites = [dict(x) for x in c.execute("SELECT * FROM sites WHERE company_id=?", (u["company_id"],)).fetchall()]
+    c.close()
+    return jsonify(sites)
+
+@app.post("/api/admin/sites/add")
+def admin_add_site():
+    u = current_user()
+    if not u or u["role"] != "administrador":
+        return jsonify(error="No autorizado"), 403
+    
+    d = request.json or {}
+    name = (d.get("name") or "").strip()
+    lat = d.get("latitude")
+    lon = d.get("longitude")
+    radius = d.get("radius_m", 10)
+    
+    if not name or lat is None or lon is None:
+        return jsonify(error="Nombre, latitud y longitud son obligatorios"), 400
+        
+    c = db()
+    c.execute(
+        "INSERT INTO sites(company_id, name, latitude, longitude, radius_m) VALUES(?, ?, ?, ?, ?)",
+        (u["company_id"], name, float(lat), float(lon), int(radius))
+    )
+    c.commit()
+    c.close()
+    return jsonify(ok=True)
