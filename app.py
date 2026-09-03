@@ -51,13 +51,6 @@ def es_domingo_o_festivo(fecha):
 
 
 def calcular_horas_extras_discriminadas(dt_inicio, dt_fin):
-  """
-  Calcula y discrimina los minutos exactos en los 4 rangos requeridos:
-  - Extra diurna (6:00 a.m. - 7:00 p.m., día hábil)
-  - Extra nocturna (7:00 p.m. - 6:00 a.m., día hábil)
-  - Extra dominical/festiva diurna (6:00 a.m. - 7:00 p.m.)
-  - Extra dominical/festiva nocturna (7:00 p.m. - 6:00 a.m.)
-  """
   resultado = {
       "extra_diurna": 0,
       "extra_nocturna": 0,
@@ -96,7 +89,7 @@ def init_db():
     CREATE TABLE IF NOT EXISTS areas(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,name TEXT NOT NULL,schedule_id INTEGER,FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(schedule_id) REFERENCES schedules(id));
     CREATE TABLE IF NOT EXISTS employees(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,site_id INTEGER,schedule_id INTEGER,area_id INTEGER,name TEXT NOT NULL,document TEXT,position TEXT,status TEXT DEFAULT 'Activo',FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(site_id) REFERENCES sites(id),FOREIGN KEY(schedule_id) REFERENCES schedules(id),FOREIGN KEY(area_id) REFERENCES areas(id));
     CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER,employee_id INTEGER,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,active INTEGER DEFAULT 1,device_token TEXT,FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(employee_id) REFERENCES employees(id));
-    CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,event_type TEXT NOT NULL,event_time TEXT NOT NULL,latitude REAL,longitude REAL,distance_m REAL,gps_valid INTEGER DEFAULT 0,status TEXT,late_minutes INTEGER DEFAULT 0,worked_minutes INTEGER DEFAULT 0,overtime_minutes INTEGER DEFAULT 0,project_code TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
+    CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,event_type TEXT NOT NULL,event_time TEXT NOT NULL,latitude REAL,longitude REAL,distance_m REAL,gps_valid INTEGER DEFAULT 0,status TEXT,late_minutes INTEGER DEFAULT 0,worked_minutes INTEGER DEFAULT 0,overtime_minutes INTEGER DEFAULT 0,project_code TEXT,location_note TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
     CREATE TABLE IF NOT EXISTS incidents(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,description TEXT,date TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
     """)
 
@@ -107,12 +100,17 @@ def init_db():
     pass
 
   try:
+    c.execute("ALTER TABLE attendance ADD COLUMN location_note TEXT")
+    c.commit()
+  except Exception:
+    pass
+
+  try:
     c.execute("ALTER TABLE users ADD COLUMN device_token TEXT")
     c.commit()
   except Exception:
     pass
 
-  # Migraciones para columnas de horas extras discriminadas en minutos
   for col_name in ["extra_diurna_mins", "extra_nocturna_mins", "extra_festiva_diurna_mins", "extra_festiva_nocturna_mins"]:
     try:
       c.execute(f"ALTER TABLE attendance ADD COLUMN {col_name} INTEGER DEFAULT 0")
@@ -561,12 +559,33 @@ INDEX_HTML = """
         navigator.geolocation.getCurrentPosition(async pos => {
             let lat = pos.coords.latitude;
             let lon = pos.coords.longitude;
+            
             let res = await fetch('/api/mark', {
                 method: 'POST', headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({event_type: type, latitude: lat, longitude: lon, project_code: projectCode})
             });
             let data = await res.json();
-            if (res.ok) {
+
+            if (res.status === 400 && data.requires_location) {
+                let locationNote = prompt(data.error + "\\n¿Dónde se encuentra?", "");
+                if (!locationNote || locationNote.trim() === "") {
+                    alert("Debe indicar dónde se encuentra al estar fuera del rango de la sede.");
+                    return;
+                }
+                locationNote = locationNote.trim();
+
+                let res2 = await fetch('/api/mark', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({event_type: type, latitude: lat, longitude: lon, project_code: projectCode, location_note: locationNote})
+                });
+                let data2 = await res2.json();
+                if (res2.ok) {
+                    let projText = projectCode ? ` | Proyecto: ${projectCode}` : '';
+                    document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">Ubicación GPS registrada para ${type} a las ${data2.time}${projText} - Sede/Lugar: ${locationNote}</div>`;
+                } else {
+                    document.getElementById('mark-result').innerHTML = `<div class="alert alert-danger">${data2.error}</div>`;
+                }
+            } else if (res.ok) {
                 let projText = projectCode ? ` | Proyecto: ${projectCode}` : '';
                 document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">Ubicación GPS registrada para ${type} a las ${data.time}${projText} - Estado: ${data.status}</div>`;
             } else {
@@ -751,6 +770,7 @@ def mark():
     lat = d.get("latitude")
     lon = d.get("longitude")
     project_code = (d.get("project_code") or "").strip().upper()
+    location_note = (d.get("location_note") or "").strip()
 
     if typ not in ("Entrada", "Salida"):
       return jsonify(error="Tipo inválido"), 400
@@ -787,7 +807,7 @@ def mark():
       ), 400
 
     row = c.execute(
-        """SELECT e.*, si.latitude site_lat, si.longitude site_lon, si.radius_m, 
+        """SELECT e.*, si.latitude site_lat, si.longitude site_lon, si.radius_m, si.name default_site_name,
                             COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
                             COALESCE(ar_sch.wed, h.wed) wed, COALESCE(ar_sch.thu, h.thu) thu, 
                             COALESCE(ar_sch.fri, h.fri) fri, COALESCE(ar_sch.sat, h.sat) sat, 
@@ -822,6 +842,13 @@ def mark():
       except Exception as e:
         print(f"Aviso cálculo GPS: {e}")
 
+    if not valid and not location_note:
+      c.close()
+      return jsonify(
+          requires_location=True,
+          error=f"Se encuentra fuera del rango de la sede autorizada (a {dist:.0f}m)."
+      ), 400
+
     status = "Registrada"
     late = 0
     extra_mins = 0
@@ -844,8 +871,6 @@ def mark():
 
     elif typ == "Salida" and period:
       end = int(period[6:8]) * 60 + int(period[9:11])
-      
-      # Construir objeto datetime para la hora de fin oficial del turno
       end_dt = dt.replace(hour=int(period[6:8]), minute=int(period[9:11]), second=0, microsecond=0)
       
       actual = dt.hour * 60 + dt.minute
@@ -861,7 +886,6 @@ def mark():
         m_extra = extra_mins % 60
         status = f"Hora extra {extra_mins} min ({h_extra}h {m_extra}m)"
         
-        # Calcular discriminación minuto a minuto desde el fin del turno hasta el momento actual de salida
         desglose = calcular_horas_extras_discriminadas(end_dt, dt)
         ed_mins = desglose["extra_diurna"]
         en_mins = desglose["extra_nocturna"]
@@ -875,8 +899,8 @@ def mark():
 
     cur = c.execute(
         """INSERT INTO
-        attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes,overtime_minutes,project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins)
-        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes,overtime_minutes,project_code,location_note,extra_diurna_mins,extra_nocturna_mins,extra_festiva_diurna_mins,extra_festiva_nocturna_mins)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
         (
             u["employee_id"],
             typ,
@@ -889,6 +913,7 @@ def mark():
             late,
             extra_mins,
             project_code,
+            location_note,
             ed_mins,
             en_mins,
             efd_mins,
@@ -924,6 +949,7 @@ def mark():
         gps_valid=valid,
         late_minutes=late,
         project_code=project_code,
+        location_note=location_note,
     )
   except Exception as e:
     return jsonify(error=f"Excepción interna: {str(e)}"), 500
@@ -939,7 +965,7 @@ def export_csv():
   rows = c.execute(
       """
         SELECT a.id, e.id as emp_id, e.name as employee_name, e.document, s.name as site_name, ar.name as area_name,
-               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code,
+               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code, a.location_note,
                a.extra_diurna_mins, a.extra_nocturna_mins, a.extra_festiva_diurna_mins, a.extra_festiva_nocturna_mins
         FROM attendance a 
         JOIN employees e ON e.id = a.employee_id 
@@ -978,6 +1004,10 @@ def export_csv():
           "salida": None,
       }
 
+    current_site = r["location_note"] if r["location_note"] else r["site_name"]
+    if current_site:
+      daily_records[key]["site_name"] = current_site
+
     event_info = {
         "time": dt_obj.strftime("%I:%M:%S %p").lower(),
         "lat": r["latitude"],
@@ -987,6 +1017,7 @@ def export_csv():
         "late": r["late_minutes"],
         "overtime": r["overtime_minutes"],
         "project_code": r["project_code"],
+        "location_note": r["location_note"],
         "extra_diurna_mins": r["extra_diurna_mins"] or 0,
         "extra_nocturna_mins": r["extra_nocturna_mins"] or 0,
         "extra_festiva_diurna_mins": r["extra_festiva_diurna_mins"] or 0,
@@ -1059,7 +1090,6 @@ def export_csv():
         int(round(sal["distance"])) if sal.get("distance") is not None else ""
     )
 
-    # Conversión de minutos acumulados a horas decimales para el reporte
     ed_h = round(sal.get("extra_diurna_mins", 0) / 60.0, 2)
     en_h = round(sal.get("extra_nocturna_mins", 0) / 60.0, 2)
     efd_h = round(sal.get("extra_festiva_diurna_mins", 0) / 60.0, 2)
@@ -1104,66 +1134,6 @@ def export_csv():
 
 
 init_db()
-
-# --- MODIFICACIÓN DE LA INYECCIÓN PARA SIMULAR LEJOS DE LA SEDE (Ej: 1.5 km / 1500 metros) ---
-def auto_inyectar_agosto():
-    try:
-        c = db()
-        emp = c.execute("SELECT id FROM employees WHERE name LIKE '%SEBASTIAN QUIROZ%'").fetchone()
-        if not emp:
-            c.close()
-            return
-        
-        emp_id = emp[0]
-        
-        # Validar si ya inyectamos AGOSTO 2026
-        check = c.execute("SELECT COUNT(*) FROM attendance WHERE employee_id=? AND event_time LIKE '2026-08%'", (emp_id,)).fetchone()[0]
-        if check == 0:
-            curr_d = date(2026, 8, 1)
-            end_d = date(2026, 8, 31)
-            
-            minutos_entrada_opciones = ["00", "05", "10"]
-            
-            while curr_d <= end_d:
-                fs = curr_d.strftime("%Y-%m-%d")
-                
-                min_str = random.choice(minutos_entrada_opciones)
-                min_int = int(min_str)
-                hora_entrada_str = f"{fs} 07:{min_str}:00"
-                
-                late_mins = min_int
-                status_entrada = 'A tiempo' if late_mins == 0 else 'Tarde'
-                
-                # Coordenadas simuladas lejos de la sede principal (~1.5 km de distancia, fuera de radio) con distancia y gps_valid en 0
-                c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Entrada', ?, 6.224110, -75.592689, 1500.0, 0, ?, ?, 0, '', 0, 0, 0, 0)", (emp_id, hora_entrada_str, f"{status_entrada} (Fuera de zona a 1500m)", late_mins))
-                
-                dt_salida = datetime(curr_d.year, curr_d.month, curr_d.day, 22, 0, 0, tzinfo=COLOMBIA_TZ)
-                t_fin = datetime(curr_d.year, curr_d.month, curr_d.day, 15, 0, 0, tzinfo=COLOMBIA_TZ)
-                ed, en, efd, efn = 0, 0, 0, 0
-                temp = t_fin
-                es_fd = (dt_salida.weekday() == 6) or (dt_salida.date() in CO_HOLIDAYS)
-                
-                while temp < dt_salida:
-                    t = temp.time()
-                    diu = time(6, 0) <= t < time(19, 0)
-                    if es_fd:
-                        if diu: efd += 1
-                        else: efn += 1
-                    else:
-                        if diu: ed += 1
-                        else: en += 1
-                    temp += timedelta(minutes=1)
-                tot = ed + en + efd + efn
-                
-                # Inyectar Salida simulando también lejos de la sede (~1.5 km)
-                c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Salida', ?, 6.224110, -75.592689, 1500.0, 0, 'Hora extra (Fuera de zona a 1500m)', 0, ?, 'DA 149', ?, ?, ?, ?)", (emp_id, f"{fs} 22:00:00", tot, ed, en, efd, efn))
-                curr_d += timedelta(days=1)
-            c.commit()
-        c.close()
-    except Exception as e:
-        print("Error inyectando:", e)
-
-auto_inyectar_agosto()
 
 if __name__ == "__main__":
   app.run(debug=True, host="0.0.0.0", port=5000)
