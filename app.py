@@ -837,7 +837,7 @@ def mark():
             float(row["site_lat"]),
             float(row["site_lon"]),
         )
-        radius = row["radius_m"] if row["radius_m"] is not None else 200
+        radius = row["radius_m"] if row["radius_m"] is not None else 10
         valid = dist <= radius
       except Exception as e:
         print(f"Aviso cálculo GPS: {e}")
