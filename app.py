@@ -483,7 +483,15 @@ INDEX_HTML = """
                     </form>
                     <div id="sites-list-container">
                         <ul class="list-group">
-                            ${data.sites.map(s => `<li class="list-group-item d-flex justify-content-between align-items-center"><span><strong>${s.name}</strong> (Lat: ${s.latitude}, Lon: ${s.longitude}, Radio: ${s.radius_m}m)</span><span class="badge bg-secondary">Sede ID: ${s.id}</span></li>`).join('')}
+                            ${data.sites.map(s => `
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    <span><strong>${s.name}</strong> (Lat: ${s.latitude}, Lon: ${s.longitude}, Radio: ${s.radius_m}m)</span>
+                                    <div class="d-flex align-items-center gap-2">
+                                        <span class="badge bg-secondary">Sede ID: ${s.id}</span>
+                                        <button class="btn btn-outline-danger btn-sm" onclick="deleteSite(${s.id})">Eliminar</button>
+                                    </div>
+                                </li>
+                            `).join('')}
                         </ul>
                     </div>
                 </div>
@@ -539,6 +547,18 @@ INDEX_HTML = """
         } else {
             let data = await res.json();
             alert(data.error || 'Error al crear la sede');
+        }
+    }
+
+    async function deleteSite(siteId) {
+        if (!confirm('¿Está seguro de eliminar esta sede?')) return;
+        let res = await fetch(`/api/admin/sites/delete/${siteId}`, {method: 'POST'});
+        if (res.ok) {
+            alert('Sede eliminada correctamente.');
+            loadState();
+        } else {
+            let data = await res.json();
+            alert(data.error || 'Error al eliminar la sede');
         }
     }
 
@@ -959,7 +979,6 @@ def mark():
     if not valid:
       status = f"{status} (Fuera de zona a {dist:.0f}m)"
 
-    # Asociamos el site_id detectado al registro si aplica, o guardamos con la sede más cercana
     target_site_id = matched_site["id"] if matched_site else None
 
     cur = c.execute(
@@ -1222,6 +1241,28 @@ def admin_add_site():
   c.commit()
   c.close()
   return jsonify(ok=True)
+
+
+@app.post("/api/admin/sites/delete/<int:site_id>")
+def admin_delete_site(site_id):
+  u = current_user()
+  if not u or u["role"] != "administrador":
+    return jsonify(error="No autorizado"), 403
+  
+  c = db()
+  site = c.execute("SELECT id FROM sites WHERE id = ? AND company_id = ?", (site_id, u["company_id"])).fetchone()
+  if not site:
+    c.close()
+    return jsonify(error="Sede no encontrada"), 404
+
+  try:
+    c.execute("DELETE FROM sites WHERE id = ?", (site_id,))
+    c.commit()
+    c.close()
+    return jsonify(ok=True)
+  except Exception as e:
+    c.close()
+    return jsonify(error=f"No se puede eliminar la sede porque está en uso: {str(e)}"), 400
 
 
 init_db()
