@@ -546,12 +546,12 @@ INDEX_HTML = """
         
         let projectCode = '';
         if (type === 'Salida') {
-            let inputCode = prompt('Ingrese el Código del o los Proyectos en los que Laboró Ej: DA 149', '');
+            let inputCode = prompt('Ingrese el Código del o los Proyectos en los que Laboró Ej: JJ 496', '');
             if (inputCode === null) return;
             projectCode = inputCode.trim().toUpperCase();
             let regex = /^[A-Z]{2}\s?\d{3}$/;
             if (!regex.test(projectCode)) {
-                alert('Formato de código de proyecto inválido. Debe ser 2 letras y 3 números (Ej: DA 149).');
+                alert('Formato de código de proyecto inválido. Debe ser 2 letras y 3 números (Ej: JJ 496).');
                 return;
             }
         }
