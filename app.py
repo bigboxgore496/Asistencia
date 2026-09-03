@@ -457,6 +457,37 @@ INDEX_HTML = """
                     <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia (Excel)</a>
                 </div>
                 
+                <!-- NUEVA SECCIÓN DE CONFIGURACIÓN DE SEDES -->
+                <div class="card p-3 shadow-sm mb-4">
+                    <h4>Configuración de Sedes</h4>
+                    <form onsubmit="saveNewSite(event)" class="row g-3 mb-3">
+                        <div class="col-md-3">
+                            <label class="form-label">Nombre de Sede</label>
+                            <input type="text" id="site-name" class="form-control" placeholder="Ej: Sede Bodega" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Latitud</label>
+                            <input type="number" step="any" id="site-lat" class="form-control" placeholder="Ej: 6.214110" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Longitud</label>
+                            <input type="number" step="any" id="site-lon" class="form-control" placeholder="Ej: -75.582689" required>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Radio (m)</label>
+                            <input type="number" id="site-radius" class="form-control" value="10" required>
+                        </div>
+                        <div class="col-md-1 d-flex align-items-end">
+                            <button type="submit" class="btn btn-dark w-100">Crear</button>
+                        </div>
+                    </form>
+                    <div id="sites-list-container">
+                        <ul class="list-group">
+                            ${data.sites.map(s => `<li class="list-group-item d-flex justify-content-between align-items-center"><span><strong>${s.name}</strong> (Lat: ${s.latitude}, Lon: ${s.longitude}, Radio: ${s.radius_m}m)</span><span class="badge bg-secondary">Sede ID: ${s.id}</span></li>`).join('')}
+                        </ul>
+                    </div>
+                </div>
+                
                 <div class="card p-3 shadow-sm mb-4">
                     <div class="d-flex justify-content-between align-items-center mb-3">
                         <h4 class="mb-0">Empleados Registrados (<span id="emp-count-badge">${data.employees.length}</span>)</h4>
@@ -487,6 +518,28 @@ INDEX_HTML = """
             setTimeout(filterEmployees, 50);
         }
         document.getElementById('app-container').innerHTML = html;
+    }
+
+    async function saveNewSite(e) {
+        e.preventDefault();
+        let name = document.getElementById('site-name').value.trim();
+        let latitude = document.getElementById('site-lat').value;
+        let longitude = document.getElementById('site-lon').value;
+        let radius_m = document.getElementById('site-radius').value;
+
+        let res = await fetch('/api/admin/sites/add', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, latitude, longitude, radius_m})
+        });
+
+        if (res.ok) {
+            alert('Sede creada exitosamente.');
+            loadState();
+        } else {
+            let data = await res.json();
+            alert(data.error || 'Error al crear la sede');
+        }
     }
 
     function filterEmployees() {
@@ -1133,42 +1186,33 @@ def export_csv():
   return output
 
 
+# NUEVAS RUTAS PARA ADMINISTRAR SEDES DESDE EL PANEL
+@app.post("/api/admin/sites/add")
+def admin_add_site():
+  u = current_user()
+  if not u or u["role"] != "administrador":
+    return jsonify(error="No autorizado"), 403
+  
+  d = request.json or {}
+  name = (d.get("name") or "").strip()
+  lat = d.get("latitude")
+  lon = d.get("longitude")
+  radius = d.get("radius_m", 10)
+  
+  if not name or lat is None or lon is None:
+    return jsonify(error="Nombre, latitud y longitud son obligatorios"), 400
+      
+  c = db()
+  c.execute(
+      "INSERT INTO sites(company_id, name, latitude, longitude, radius_m) VALUES(?, ?, ?, ?, ?)",
+      (u["company_id"], name, float(lat), float(lon), int(radius))
+  )
+  c.commit()
+  c.close()
+  return jsonify(ok=True)
+
+
 init_db()
 
 if __name__ == "__main__":
   app.run(debug=True, host="0.0.0.0", port=5000)
-
-
-@app.get("/api/admin/sites")
-def admin_get_sites():
-    u = current_user()
-    if not u or u["role"] != "administrador":
-        return jsonify(error="No autorizado"), 403
-    c = db()
-    sites = [dict(x) for x in c.execute("SELECT * FROM sites WHERE company_id=?", (u["company_id"],)).fetchall()]
-    c.close()
-    return jsonify(sites)
-
-@app.post("/api/admin/sites/add")
-def admin_add_site():
-    u = current_user()
-    if not u or u["role"] != "administrador":
-        return jsonify(error="No autorizado"), 403
-    
-    d = request.json or {}
-    name = (d.get("name") or "").strip()
-    lat = d.get("latitude")
-    lon = d.get("longitude")
-    radius = d.get("radius_m", 10)
-    
-    if not name or lat is None or lon is None:
-        return jsonify(error="Nombre, latitud y longitud son obligatorios"), 400
-        
-    c = db()
-    c.execute(
-        "INSERT INTO sites(company_id, name, latitude, longitude, radius_m) VALUES(?, ?, ?, ?, ?)",
-        (u["company_id"], name, float(lat), float(lon), int(radius))
-    )
-    c.commit()
-    c.close()
-    return jsonify(ok=True)
