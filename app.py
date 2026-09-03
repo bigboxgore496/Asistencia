@@ -1139,8 +1139,6 @@ if __name__ == "__main__":
   app.run(debug=True, host="0.0.0.0", port=5000)
 
 
-#OTRAS FUNCIONES 
-
 @app.get("/api/admin/sites")
 def admin_get_sites():
     u = current_user()
