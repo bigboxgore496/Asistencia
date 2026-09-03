@@ -433,7 +433,7 @@ INDEX_HTML = """
         let html = `
             <div class="card p-4 shadow-sm mb-4">
                 <h2>Panel de Control - Omma Group</h2>
-                <p class="text-muted">Control de doble registro de ubicación (Ingreso y Salida independientes con GPS y detección automática de sedes).</p>
+                <p class="text-muted">Control de asistencia con geolocalización, gestión de sedes, horarios y empleados.</p>
             </div>`;
 
         if (data.user.role === 'empleado') {
@@ -450,6 +450,8 @@ INDEX_HTML = """
         } else {
             window.allSysEmployees = data.employees;
             window.allSysAreas = data.areas;
+            window.allSysSchedules = data.schedules;
+            window.allSysSites = data.sites;
             
             html += `
                 <div class="card p-3 shadow-sm mb-4">
@@ -457,7 +459,7 @@ INDEX_HTML = """
                     <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia (Excel)</a>
                 </div>
                 
-                <!-- SECCIÓN DE CONFIGURACIÓN DE SEDES MÚLTIPLES -->
+                <!-- CONFIGURACIÓN DE SEDES -->
                 <div class="card p-3 shadow-sm mb-4">
                     <h4>Configuración de Sedes</h4>
                     <form onsubmit="saveNewSite(event)" class="row g-3 mb-3">
@@ -487,7 +489,7 @@ INDEX_HTML = """
                                 <li class="list-group-item d-flex justify-content-between align-items-center">
                                     <span><strong>${s.name}</strong> (Lat: ${s.latitude}, Lon: ${s.longitude}, Radio: ${s.radius_m}m)</span>
                                     <div class="d-flex align-items-center gap-2">
-                                        <span class="badge bg-secondary">Sede ID: ${s.id}</span>
+                                        <span class="badge bg-secondary">ID: ${s.id}</span>
                                         <button class="btn btn-outline-danger btn-sm" onclick="deleteSite(${s.id})">Eliminar</button>
                                     </div>
                                 </li>
@@ -495,10 +497,93 @@ INDEX_HTML = """
                         </ul>
                     </div>
                 </div>
-                
+
+                <!-- CONFIGURADOR DE HORARIOS Y ASIGNACIÓN POR ÁREA -->
                 <div class="card p-3 shadow-sm mb-4">
+                    <h4>Configurador de Horarios y Áreas</h4>
+                    <form onsubmit="saveNewSchedule(event)" class="row g-3 mb-3 border-bottom pb-3">
+                        <div class="col-md-4">
+                            <label class="form-label">Nombre del Horario</label>
+                            <input type="text" id="sched-name" class="form-control" placeholder="Ej: Turno Tarde (14:00 - 22:00)" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Horas Lunes a Viernes</label>
+                            <input type="text" id="sched-lunes" class="form-control" value="07:00-15:00" required>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Tolerancia (min)</label>
+                            <input type="number" id="sched-tol" class="form-control" value="5" required>
+                        </div>
+                        <div class="col-md-3 d-flex align-items-end">
+                            <button type="submit" class="btn btn-dark w-100">Crear Horario</button>
+                        </div>
+                    </form>
+                    
+                    <h5 class="mt-3">Asignar Horario a Áreas</h5>
+                    <div class="table-responsive">
+                        <table class="table table-bordered align-middle">
+                            <thead>
+                                <tr>
+                                    <th>Área</th>
+                                    <th>Horario Actual Asignado</th>
+                                    <th>Cambiar Horario</th>
+                                </tr>
+                            </thead>
+                            <tbody>
+                                ${data.areas.map(a => `
+                                    <tr>
+                                        <td><strong>${a.name}</strong></td>
+                                        <td><span class="text-muted">${a.schedule_name || 'Sin horario'}</span></td>
+                                        <td>
+                                            <div class="input-group">
+                                                <select id="area-sched-${a.id}" class="form-select form-select-sm">
+                                                    ${data.schedules.map(sch => `<option value="${sch.id}" ${sch.id === a.schedule_id ? 'selected' : ''}>${sch.name}</option>`).join('')}
+                                                </select>
+                                                <button class="btn btn-outline-primary btn-sm" onclick="updateAreaSchedule(${a.id})">Actualizar</button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                `).join('')}
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- GESTIÓN DE EMPLEADOS (CREAR / ELIMINAR) -->
+                <div class="card p-3 shadow-sm mb-4">
+                    <h4>Gestión de Empleados</h4>
+                    <form onsubmit="saveNewEmployee(event)" class="row g-3 mb-3 border-bottom pb-3">
+                        <div class="col-md-3">
+                            <label class="form-label">Nombre Completo</label>
+                            <input type="text" id="emp-new-name" class="form-control" placeholder="Ej: CARLOS PÉREZ" required>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Cédula / Documento</label>
+                            <input type="text" id="emp-new-doc" class="form-control" placeholder="Ej: 1035123456" required>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Área</label>
+                            <select id="emp-new-area" class="form-select" required>
+                                ${data.areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Sede Base</label>
+                            <select id="emp-new-site" class="form-select" required>
+                                ${data.sites.map(s => `<option value="${s.id}">${s.name}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Contraseña Inicial</label>
+                            <input type="text" id="emp-new-pass" class="form-control" placeholder="Por defecto cédula">
+                        </div>
+                        <div class="col-md-1 d-flex align-items-end">
+                            <button type="submit" class="btn btn-success w-100">Crear</button>
+                        </div>
+                    </form>
+                    
                     <div class="d-flex justify-content-between align-items-center mb-3">
-                        <h4 class="mb-0">Empleados Registrados (<span id="emp-count-badge">${data.employees.length}</span>)</h4>
+                        <h5 class="mb-0">Empleados Registrados (<span id="emp-count-badge">${data.employees.length}</span>)</h5>
                     </div>
                     
                     <div class="row g-2 mb-3">
@@ -562,6 +647,78 @@ INDEX_HTML = """
         }
     }
 
+    async function saveNewSchedule(e) {
+        e.preventDefault();
+        let name = document.getElementById('sched-name').value.trim();
+        let mon = document.getElementById('sched-lunes').value.trim();
+        let tolerance_minutes = document.getElementById('sched-tol').value;
+
+        let res = await fetch('/api/admin/schedules/add', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, mon, tue: mon, wed: mon, thu: mon, fri: mon, sat: mon, sun: '', tolerance_minutes})
+        });
+
+        if (res.ok) {
+            alert('Horario creado exitosamente.');
+            loadState();
+        } else {
+            let data = await res.json();
+            alert(data.error || 'Error al crear horario');
+        }
+    }
+
+    async function updateAreaSchedule(areaId) {
+        let scheduleId = document.getElementById(`area-sched-${areaId}`).value;
+        let res = await fetch('/api/admin/areas/update-schedule', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({area_id: areaId, schedule_id: scheduleId})
+        });
+        if (res.ok) {
+            alert('Horario actualizado para el área.');
+            loadState();
+        } else {
+            let data = await res.json();
+            alert(data.error || 'Error al actualizar');
+        }
+    }
+
+    async function saveNewEmployee(e) {
+        e.preventDefault();
+        let name = document.getElementById('emp-new-name').value.trim();
+        let document_num = document.getElementById('emp-new-doc').value.trim();
+        let area_id = document.getElementById('emp-new-area').value;
+        let site_id = document.getElementById('emp-new-site').value;
+        let password = document.getElementById('emp-new-pass').value.trim();
+
+        let res = await fetch('/api/admin/employees/add', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, document: document_num, area_id, site_id, password})
+        });
+
+        if (res.ok) {
+            alert('Empleado registrado con éxito.');
+            loadState();
+        } else {
+            let data = await res.json();
+            alert(data.error || 'Error al registrar empleado');
+        }
+    }
+
+    async function deleteEmployee(empId) {
+        if (!confirm('¿Está seguro de eliminar este empleado y sus registros de usuario asociados?')) return;
+        let res = await fetch(`/api/admin/employees/delete/${empId}`, {method: 'POST'});
+        if (res.ok) {
+            alert('Empleado eliminado correctamente.');
+            loadState();
+        } else {
+            let data = await res.json();
+            alert(data.error || 'Error al eliminar empleado');
+        }
+    }
+
     function filterEmployees() {
         if (!window.allSysEmployees) return;
         let search = document.getElementById('filter-search').value.toLowerCase();
@@ -592,11 +749,12 @@ INDEX_HTML = """
             <li class="list-group-item d-flex justify-content-between align-items-center">
                 <div>
                     <strong>${e.name}</strong><br>
-                    <small class="text-muted">Doc: ${e.document || 'N/A'}</small>
+                    <small class="text-muted">Doc: ${e.document || 'N/A'} | Sede: ${e.site_name || 'N/A'}</small>
                 </div>
                 <div class="d-flex align-items-center gap-2">
                     <span class="badge bg-primary">${e.area_name || 'Sin área'}</span>
                     ${e.user_id ? `<button class="btn btn-outline-warning btn-sm" onclick="resetDevice(${e.user_id})">Reiniciar Celular</button>` : ''}
+                    <button class="btn btn-outline-danger btn-sm" onclick="deleteEmployee(${e.id})">Eliminar</button>
                 </div>
             </li>`).join('');
     }
@@ -878,7 +1036,6 @@ def mark():
           )
       ), 400
 
-    # OBTENEMOS TODAS LAS SEDES DE LA EMPRESA PARA EVALUAR PROXIMIDAD
     company_sites = c.execute(
         "SELECT * FROM sites WHERE company_id = ?", 
         (u["company_id"],)
@@ -978,8 +1135,6 @@ def mark():
 
     if not valid:
       status = f"{status} (Fuera de zona a {dist:.0f}m)"
-
-    target_site_id = matched_site["id"] if matched_site else None
 
     cur = c.execute(
         """INSERT INTO
@@ -1178,9 +1333,16 @@ def export_csv():
     efd_h = round(sal.get("extra_festiva_diurna_mins", 0) / 60.0, 2)
     efn_h = round(sal.get("extra_festiva_nocturna_mins", 0) / 60.0, 2)
 
+    # Conversión de cédula a número entero para evitar formato de texto en Excel
+    doc_val = rec["document"]
+    try:
+      doc_val = int(doc_val) if doc_val else ""
+    except Exception:
+      pass
+
     row_data = [
         rec["employee_name"],
-        str(rec["document"] or ""),
+        doc_val,
         rec["area_name"] or "",
         rec["site_name"] or "",
         rec["date"],
@@ -1223,16 +1385,13 @@ def admin_add_site():
   u = current_user()
   if not u or u["role"] != "administrador":
     return jsonify(error="No autorizado"), 403
-  
   d = request.json or {}
   name = (d.get("name") or "").strip()
   lat = d.get("latitude")
   lon = d.get("longitude")
   radius = d.get("radius_m", 10)
-  
   if not name or lat is None or lon is None:
     return jsonify(error="Nombre, latitud y longitud son obligatorios"), 400
-      
   c = db()
   c.execute(
       "INSERT INTO sites(company_id, name, latitude, longitude, radius_m) VALUES(?, ?, ?, ?, ?)",
@@ -1248,13 +1407,11 @@ def admin_delete_site(site_id):
   u = current_user()
   if not u or u["role"] != "administrador":
     return jsonify(error="No autorizado"), 403
-  
   c = db()
   site = c.execute("SELECT id FROM sites WHERE id = ? AND company_id = ?", (site_id, u["company_id"])).fetchone()
   if not site:
     c.close()
     return jsonify(error="Sede no encontrada"), 404
-
   try:
     c.execute("DELETE FROM sites WHERE id = ?", (site_id,))
     c.commit()
@@ -1263,6 +1420,114 @@ def admin_delete_site(site_id):
   except Exception as e:
     c.close()
     return jsonify(error=f"No se puede eliminar la sede porque está en uso: {str(e)}"), 400
+
+
+@app.post("/api/admin/schedules/add")
+def admin_add_schedule():
+  u = current_user()
+  if not u or u["role"] != "administrador":
+    return jsonify(error="No autorizado"), 403
+  d = request.json or {}
+  name = (d.get("name") or "").strip()
+  mon = d.get("mon", "07:00-15:00")
+  tue = d.get("tue", "07:00-15:00")
+  wed = d.get("wed", "07:00-15:00")
+  thu = d.get("thu", "07:00-15:00")
+  fri = d.get("fri", "07:00-15:00")
+  sat = d.get("sat", "07:00-15:00")
+  sun = d.get("sun", "")
+  lunch_start = d.get("lunch_start", "13:00")
+  lunch_end = d.get("lunch_end", "13:40")
+  tolerance = int(d.get("tolerance_minutes", 5))
+
+  if not name:
+    return jsonify(error="El nombre del horario es obligatorio"), 400
+
+  c = db()
+  c.execute(
+      "INSERT INTO schedules(company_id, name, mon, tue, wed, thu, fri, sat, sun, lunch_start, lunch_end, tolerance_minutes) VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
+      (u["company_id"], name, mon, tue, wed, thu, fri, sat, sun, lunch_start, lunch_end, tolerance)
+  )
+  c.commit()
+  c.close()
+  return jsonify(ok=True)
+
+
+@app.post("/api/admin/areas/update-schedule")
+def admin_update_area_schedule():
+  u = current_user()
+  if not u or u["role"] != "administrador":
+    return jsonify(error="No autorizado"), 403
+  d = request.json or {}
+  area_id = d.get("area_id")
+  schedule_id = d.get("schedule_id")
+
+  c = db()
+  c.execute("UPDATE areas SET schedule_id = ? WHERE id = ? AND company_id = ?", (schedule_id, area_id, u["company_id"]))
+  c.commit()
+  c.close()
+  return jsonify(ok=True)
+
+
+@app.post("/api/admin/employees/add")
+def admin_add_employee():
+  u = current_user()
+  if not u or u["role"] != "administrador":
+    return jsonify(error="No autorizado"), 403
+  d = request.json or {}
+  name = (d.get("name") or "").strip().upper()
+  document = (d.get("document") or "").strip()
+  area_id = d.get("area_id")
+  site_id = d.get("site_id")
+  password = (d.get("password") or document).strip()
+
+  if not name or not document:
+    return jsonify(error="Nombre y documento son obligatorios"), 400
+
+  c = db()
+  area = c.execute("SELECT schedule_id, name FROM areas WHERE id = ?", (area_id,)).fetchone()
+  schedule_id = area["schedule_id"] if area else None
+  if not schedule_id:
+    sch = c.execute("SELECT id FROM schedules WHERE company_id = ? LIMIT 1", (u["company_id"],)).fetchone()
+    schedule_id = sch["id"] if sch else None
+
+  area_name = area["name"] if area else ""
+  cur = c.execute(
+      "INSERT INTO employees(company_id, site_id, schedule_id, area_id, name, document, position) VALUES(?,?,?,?,?,?,?)",
+      (u["company_id"], site_id, schedule_id, area_id, name, document, area_name)
+  )
+  eid = cur.lastrowid
+  username = name.split()[0].lower() + "_" + document[-4:]
+  c.execute(
+      "INSERT INTO users(company_id, employee_id, username, password_hash, role) VALUES(?,?,?,?,?)",
+      (u["company_id"], eid, username, hashpw(password), "empleado")
+  )
+  c.commit()
+  c.close()
+  return jsonify(ok=True)
+
+
+@app.post("/api/admin/employees/delete/<int:emp_id>")
+def admin_delete_employee(emp_id):
+  u = current_user()
+  if not u or u["role"] != "administrador":
+    return jsonify(error="No autorizado"), 403
+  c = db()
+  emp = c.execute("SELECT id FROM employees WHERE id = ? AND company_id = ?", (emp_id, u["company_id"])).fetchone()
+  if not emp:
+    c.close()
+    return jsonify(error="Empleado no encontrado"), 404
+  try:
+    c.execute("DELETE FROM users WHERE employee_id = ?", (emp_id,))
+    c.execute("DELETE FROM attendance WHERE employee_id = ?", (emp_id,))
+    c.execute("DELETE FROM incidents WHERE employee_id = ?", (emp_id,))
+    c.execute("DELETE FROM employees WHERE id = ?", (emp_id,))
+    c.commit()
+    c.close()
+    return jsonify(ok=True)
+  except Exception as e:
+    c.close()
+    return jsonify(error=f"Error al eliminar empleado: {str(e)}"), 400
 
 
 init_db()
