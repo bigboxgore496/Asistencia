@@ -998,15 +998,11 @@ def export_csv():
           "employee_name": r["employee_name"],
           "document": r["document"],
           "area_name": r["area_name"],
-          "site_name": r["site_name"],
+          "site_name": r["site_name"] or "",
           "date": dt_obj.strftime("%d-%b-%Y").lower(),
           "entrada": None,
           "salida": None,
       }
-
-    current_site = r["location_note"] if r["location_note"] else r["site_name"]
-    if current_site:
-      daily_records[key]["site_name"] = current_site
 
     event_info = {
         "time": dt_obj.strftime("%I:%M:%S %p").lower(),
@@ -1017,7 +1013,7 @@ def export_csv():
         "late": r["late_minutes"],
         "overtime": r["overtime_minutes"],
         "project_code": r["project_code"],
-        "location_note": r["location_note"],
+        "location_note": r["location_note"] or "",
         "extra_diurna_mins": r["extra_diurna_mins"] or 0,
         "extra_nocturna_mins": r["extra_nocturna_mins"] or 0,
         "extra_festiva_diurna_mins": r["extra_festiva_diurna_mins"] or 0,
@@ -1042,11 +1038,13 @@ def export_csv():
       "Entrada - Hora",
       "Entrada - GPS",
       "Entrada - Distancia (m)",
+      "Entrada - Lugar / Nota",
       "Entrada - Estado",
       "Salida - Hora",
       "Salida - GPS",
       "Salida - Distancia (m)",
       "Salida - Proyecto",
+      "Salida - Lugar / Nota",
       "Salida - Estado",
       "Minutos Retardo",
       "Total Extras (min)",
@@ -1104,11 +1102,13 @@ def export_csv():
         ent.get("time", ""),
         ent_maps,
         ent_dist,
+        ent.get("location_note", ""),
         ent.get("status", ""),
         sal.get("time", ""),
         sal_maps,
         sal_dist,
         sal.get("project_code", ""),
+        sal.get("location_note", ""),
         sal.get("status", ""),
         int(ent.get("late", 0) or 0),
         int(sal.get("overtime", 0) or 0),
