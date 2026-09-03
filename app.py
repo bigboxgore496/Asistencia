@@ -6,7 +6,7 @@ import pytz
 import openpyxl
 from io import BytesIO
 from flask import send_file
-
+ 
 app = Flask(__name__)
 app.secret_key = 'clave_secreta_super_segura_multiempresa'
 
