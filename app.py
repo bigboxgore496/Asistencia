@@ -1,335 +1,1271 @@
-import os
-from datetime import datetime, time, date, timedelta
-from flask import Flask, render_template, request, jsonify, redirect, url_for, session
-from flask_sqlalchemy import SQLAlchemy
-import pytz
+from datetime import datetime, date, time, timedelta
+import hashlib
+import io
+import math
+from pathlib import Path
+import random
+import secrets 
+import unicodedata
+from zoneinfo import ZoneInfo
+from flask import (
+    Flask,
+    jsonify,
+    make_response,
+    render_template_string,
+    request,
+    session,
+)
+import gspread
+import holidays
 import openpyxl
-from io import BytesIO
-from flask import send_file
- 
+import sqlite3
+
 app = Flask(__name__)
-app.secret_key = 'clave_secreta_super_segura_multiempresa'
+app.secret_key = secrets.token_hex(32)
+DB = Path(__file__).with_name("asistencia.db")
+COLOMBIA_TZ = ZoneInfo("America/Bogota")
+CO_HOLIDAYS = holidays.Colombia()
 
-# Configuración de la Base de Datos SQLite (Soporte multi-empresa integrado)
-BASE_DIR = os.path.abspath(os.path.dirname(__file__))
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(BASE_DIR, 'asistencia.db')
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
-db = SQLAlchemy(app)
+def db():
+  c = sqlite3.connect(DB)
+  c.row_factory = sqlite3.Row
+  c.execute("PRAGMA foreign_keys=ON")
+  return c
 
-# Zona horaria de Colombia
-TZ_COLOMBIA = pytz.timezone('America/Bogota')
 
-def obtener_ahora_colombia():
-    return datetime.now(TZ_COLOMBIA)
+def hashpw(p):
+  return hashlib.sha256(p.encode()).hexdigest()
 
-# ==========================================
-# MODELOS DE BASE DE DATOS (CON MULTI-TENANCY)
-# ==========================================
 
-class Company(db.Model):
-    __tablename__ = 'companies'
-    id = db.Column(db.Integer, primary_key=True)
-    name = db.Column(db.String(150), nullable=False)
-    nit = db.Column(db.String(50), unique=True, nullable=False)
-    is_active = db.Column(db.Boolean, default=True)
+def strip_accents(text):
+  if not text:
+    return ""
+  return "".join(
+      c for c in unicodedata.normalize("NFD", text) if unicodedata.category(c) != "Mn"
+  )
 
-class Employee(db.Model):
-    __tablename__ = 'employees'
-    id = db.Column(db.Integer, primary_key=True)
-    company_id = db.Column(db.Integer, db.ForeignKey('companies.id'), nullable=False, default=1)
-    cedula = db.Column(db.String(50), unique=True, nullable=False)
-    nombre = db.Column(db.String(150), nullable=False)
-    area = db.Column(db.String(100), nullable=False)
-    device_uuid = db.Column(db.String(255), nullable=True) # Control de seguridad por dispositivo
 
-class Attendance(db.Model):
-    __tablename__ = 'attendances'
-    id = db.Column(db.Integer, primary_key=True)
-    company_id = db.Column(db.Integer, db.ForeignKey('companies.id'), nullable=False, default=1)
-    cedula = db.Column(db.String(50), nullable=False)
-    nombre = db.Column(db.String(150), nullable=False)
-    fecha = db.Column(db.String(20), nullable=False)
-    hora_entrada = db.Column(db.String(20), nullable=True)
-    lat_entrada = db.Column(db.Float, nullable=True)
-    lon_entrada = db.Column(db.Float, nullable=True)
-    ubicacion_valida_entrada = db.Column(db.Boolean, default=True)
-    nota_entrada = db.Column(db.String(255), nullable=True)
+def es_domingo_o_festivo(fecha):
+  return fecha.weekday() == 6 or fecha in CO_HOLIDAYS
+
+
+def calcular_horas_extras_discriminadas(dt_inicio, dt_fin):
+  resultado = {
+      "extra_diurna": 0,
+      "extra_nocturna": 0,
+      "extra_festiva_diurna": 0,
+      "extra_festiva_nocturna": 0
+  }
+  
+  current = dt_inicio
+  while current < dt_fin:
+    t = current.time()
+    es_fest_dom = es_domingo_o_festivo(current.date())
+    es_diurna = time(6, 0) <= t < time(19, 0)
     
-    hora_salida = db.Column(db.String(20), nullable=True)
-    lat_salida = db.Column(db.Float, nullable=True)
-    lon_salida = db.Column(db.Float, nullable=True)
-    ubicacion_valida_salida = db.Column(db.Boolean, default=True)
-    nota_salida = db.Column(db.String(255), nullable=True)
+    if es_fest_dom:
+      if es_diurna:
+        resultado["extra_festiva_diurna"] += 1
+      else:
+        resultado["extra_festiva_nocturna"] += 1
+    else:
+      if es_diurna:
+        resultado["extra_diurna"] += 1
+      else:
+        resultado["extra_nocturna"] += 1
+        
+    current += timedelta(minutes=1)
     
-    horas_ordinarias = db.Column(db.Float, default=0.0)
-    horas_extras_diurnas = db.Column(db.Float, default=0.0)
-    horas_extras_nocturnas = db.Column(db.Float, default=0.0)
-    horas_extras_festivas = db.Column(db.Float, default=0.0)
+  return resultado
 
-class ScheduleConfig(db.Model):
-    __tablename__ = 'schedule_configs'
-    id = db.Column(db.Integer, primary_key=True)
-    company_id = db.Column(db.Integer, db.ForeignKey('companies.id'), nullable=False, default=1)
-    area = db.Column(db.String(100), unique=True, nullable=False)
-    hora_entrada = db.Column(db.String(10), nullable=False, default="08:00")
-    hora_salida = db.Column(db.String(10), nullable=False, default="18:00")
-    tolerancia_minutos = db.Column(db.Integer, nullable=False, default=15)
 
-# Coordenadas de la empresa principal y radio permitido en metros
-LAT_EMPRESA = 6.2442
-LON_EMPRESA = -75.5812
-RADIO_MAXIMO_METROS = 100.0
+def init_db():
+  c = db()
+  c.executescript("""
+    CREATE TABLE IF NOT EXISTS companies(id INTEGER PRIMARY KEY AUTOINCREMENT,name TEXT NOT NULL,active INTEGER DEFAULT 1);
+    CREATE TABLE IF NOT EXISTS sites(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,name TEXT NOT NULL,latitude REAL NOT NULL,longitude REAL NOT NULL,radius_m INTEGER DEFAULT 10,FOREIGN KEY(company_id) REFERENCES companies(id));
+    CREATE TABLE IF NOT EXISTS schedules(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,name TEXT NOT NULL,mon TEXT DEFAULT '',tue TEXT DEFAULT '',wed TEXT DEFAULT '',thu TEXT DEFAULT '',fri TEXT DEFAULT '',sat TEXT DEFAULT '',sun TEXT DEFAULT '',lunch_start TEXT DEFAULT '',lunch_end TEXT DEFAULT '',break_minutes INTEGER DEFAULT 40,tolerance_minutes INTEGER DEFAULT 5,FOREIGN KEY(company_id) REFERENCES companies(id));
+    CREATE TABLE IF NOT EXISTS areas(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,name TEXT NOT NULL,schedule_id INTEGER,FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(schedule_id) REFERENCES schedules(id));
+    CREATE TABLE IF NOT EXISTS employees(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER NOT NULL,site_id INTEGER,schedule_id INTEGER,area_id INTEGER,name TEXT NOT NULL,document TEXT,position TEXT,status TEXT DEFAULT 'Activo',FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(site_id) REFERENCES sites(id),FOREIGN KEY(schedule_id) REFERENCES schedules(id),FOREIGN KEY(area_id) REFERENCES areas(id));
+    CREATE TABLE IF NOT EXISTS users(id INTEGER PRIMARY KEY AUTOINCREMENT,company_id INTEGER,employee_id INTEGER,username TEXT UNIQUE NOT NULL,password_hash TEXT NOT NULL,role TEXT NOT NULL,active INTEGER DEFAULT 1,device_token TEXT,FOREIGN KEY(company_id) REFERENCES companies(id),FOREIGN KEY(employee_id) REFERENCES employees(id));
+    CREATE TABLE IF NOT EXISTS attendance(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,event_type TEXT NOT NULL,event_time TEXT NOT NULL,latitude REAL,longitude REAL,distance_m REAL,gps_valid INTEGER DEFAULT 0,status TEXT,late_minutes INTEGER DEFAULT 0,worked_minutes INTEGER DEFAULT 0,overtime_minutes INTEGER DEFAULT 0,project_code TEXT,location_note TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
+    CREATE TABLE IF NOT EXISTS incidents(id INTEGER PRIMARY KEY AUTOINCREMENT,employee_id INTEGER NOT NULL,description TEXT,date TEXT,FOREIGN KEY(employee_id) REFERENCES employees(id));
+    """)
 
-def calcular_distancia_metros(lat1, lon1, lat2, lon2):
-    import math
-    R = 6371000  # Radio de la tierra en metros
-    phi1 = math.radians(lat1)
-    phi2 = math.radians(lat2)
-    dphi = math.radians(lat2 - lat1)
-    dlambda = math.radians(lon2 - lon1)
-    a = math.sin(dphi/2)**2 + math.cos(phi1) * math.cos(phi2) * math.sin(dlambda/2)**2
-    c = 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
-    return R * c
+  try:
+    c.execute("ALTER TABLE attendance ADD COLUMN project_code TEXT")
+    c.commit()
+  except Exception:
+    pass
 
-with app.app_context():
-    db.create_all()
-    # Crear empresa por defecto si la base de datos está vacía para asegurar retrocompatibilidad total
-    if not Company.query.first():
-        empresa_defecto = Company(id=1, name="Empresa Principal Demo", nit="900000000-1", is_active=True)
-        db.session.add(empresa_defecto)
-        db.session.commit()
+  try:
+    c.execute("ALTER TABLE attendance ADD COLUMN location_note TEXT")
+    c.commit()
+  except Exception:
+    pass
 
-# ==========================================
-# RUTAS DEL SISTEMA
-# ==========================================
+  try:
+    c.execute("ALTER TABLE users ADD COLUMN device_token TEXT")
+    c.commit()
+  except Exception:
+    pass
 
-@app.route('/')
-def index():
-    return render_template('index.html')
+  for col_name in ["extra_diurna_mins", "extra_nocturna_mins", "extra_festiva_diurna_mins", "extra_festiva_nocturna_mins"]:
+    try:
+      c.execute(f"ALTER TABLE attendance ADD COLUMN {col_name} INTEGER DEFAULT 0")
+      c.commit()
+    except Exception:
+      pass
 
-@app.route('/admin')
-def admin():
-    company_id = 1 # Por defecto empresa principal
-    empleados = Employee.query.filter_by(company_id=company_id).all()
-    configuraciones = ScheduleConfig.query.filter_by(company_id=company_id).all()
-    empresas = Company.query.all()
-    return render_template('admin.html', empleados=empleados, configuraciones=configuraciones, empresas=empresas)
+  if c.execute("SELECT COUNT(*) FROM companies").fetchone()[0] == 0:
+    cur = c.execute("INSERT INTO companies(name) VALUES(?)", ("Omma Group",))
+    co = cur.lastrowid
 
-@app.route('/api/marcar', methods=['POST'])
-def marcar_asistencia():
-    data = request.json
-    cedula = data.get('cedula')
-    lat = data.get('lat')
-    lon = data.get('lon')
-    device_uuid = data.get('device_uuid')
-    company_id = data.get('company_id', 1) # Soporte multiempresa
+    cur = c.execute(
+        "INSERT INTO sites(company_id,name,latitude,longitude,radius_m)"
+        " VALUES(?,?,?,?,?)",
+        (co, "Sede Principal", 6.214110727151654, -75.58268995990919, 10),
+    )
+    site_principal = cur.lastrowid
 
-    if not cedula:
-        return jsonify({'success': False, 'message': 'Debe ingresar la cédula.'}), 400
+    cur = c.execute(
+        """INSERT INTO
+        schedules(company_id,name,mon,tue,wed,thu,fri,sat,sun,lunch_start,lunch_end,break_minutes,tolerance_minutes)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            co,
+            "Horario Normal OMMA (07:00 - 15:00)",
+            "07:00-15:00",
+            "07:00-15:00",
+            "07:00-15:00",
+            "07:00-15:00",
+            "07:00-15:00",
+            "07:00-15:00",
+            "",
+            "13:00",
+            "13:40",
+            40,
+            5,
+        ),
+    )
+    sch = cur.lastrowid
 
-    empleado = Employee.query.filter_by(cedula=cedula, company_id=company_id).first()
-    if not empleado:
-        return jsonify({'success': False, 'message': 'Empleado no encontrado en esta empresa.'}), 404
-
-    # Validación de seguridad por dispositivo (Device UUID)
-    if empleado.device_uuid and empleado.device_uuid != device_uuid:
-        return jsonify({
-            'success': False, 
-            'message': 'Dispositivo no autorizado. Este usuario ya se encuentra vinculado a otro teléfono celular.'
-        }), 403
-    elif not empleado.device_uuid and device_uuid:
-        empleado.device_uuid = device_uuid
-        db.session.commit()
-
-    # Validación de geolocalización
-    ubicacion_valida = True
-    nota_ubicacion = None
-    if lat is not None and lon is not None:
-        distancia = calcular_distancia_metros(lat, lon, LAT_EMPRESA, LON_EMPRESA)
-        if distancia > RADIO_MAXIMO_METROS:
-            ubicacion_valida = False
-            nota_ubicacion = f"Fuera de rango permitído ({round(distancia, 2)} metros de la sede)."
-    else:
-        ubicacion_valida = False
-        nota_ubicacion = "No se proveyeron coordenadas de GPS."
-
-    ahora = obtener_ahora_colombia()
-    fecha_hoy = ahora.strftime('%Y-%m-%d')
-    hora_actual_str = ahora.strftime('%H:%M:%S')
-
-    asistencia = Attendance.query.filter_by(company_id=company_id, cedula=cedula, fecha=fecha_hoy).first()
-
-    if not asistencia:
-        # Registro de ENTRADA
-        asistencia = Attendance(
-            company_id=company_id,
-            cedula=cedula,
-            nombre=empleado.nombre,
-            fecha=fecha_hoy,
-            hora_entrada=hora_actual_str,
-            lat_entrada=lat,
-            lon_entrada=lon,
-            ubicacion_valida_entrada=ubicacion_valida,
-            nota_entrada=nota_ubicacion
-        )
-        db.session.add(asistencia)
-        db.session.commit()
-        return jsonify({
-            'success': True,
-            'tipo': 'entrada',
-            'message': f'¡Entrada registrada con éxito para {empleado.nombre}!',
-            'hora': hora_actual_str
-        })
-    else:
-        if asistencia.hora_salida:
-            return jsonify({'success': False, 'message': 'Ya se ha registrado la entrada y salida para el día de hoy.'}), 400
-        
-        # Registro de SALIDA y cálculo de horas
-        asistencia.hora_salida = hora_actual_str
-        asistencia.lat_salida = lat
-        asistencia.lon_salida = lon
-        asistencia.ubicacion_valida_salida = ubicacion_valida
-        asistencia.nota_salida = nota_ubicacion
-
-        # Motor de cálculo de horas ordinarias y extras
-        try:
-            FMT = '%H:%M:%S'
-            t_entrada = datetime.strptime(asistencia.hora_entrada, FMT)
-            t_salida = datetime.strptime(asistencia.hora_salida, FMT)
-            diferencia_horas = (t_salida - t_entrada).total_seconds() / 3600.0
-            
-            if diferencia_horas < 0:
-                diferencia_horas = 0
-
-            # Obtener configuración de horario para el área
-            cfg = ScheduleConfig.query.filter_by(company_id=company_id, area=empleado.area).first()
-            horas_jornada = 8.0 # Estándar por defecto
-            if cfg:
-                h_ent = datetime.strptime(cfg.hora_entrada, '%H:%M')
-                h_sal = datetime.strptime(cfg.hora_salida, '%H:%M')
-                horas_jornada = max(1.0, (h_sal - h_ent).total_seconds() / 3600.0)
-
-            if diferencia_horas <= horas_jornada:
-                asistencia.horas_ordinarias = round(diferencia_horas, 2)
-                asistencia.horas_extras_diurnas = 0.0
-            else:
-                asistencia.horas_ordinarias = round(horas_jornada, 2)
-                extras = diferencia_horas - horas_jornada
-                # Asignación simplificada de extras diurnas base
-                asistencia.horas_extras_diurnas = round(extras, 2)
-        except Exception as e:
-            print("Error calculando horas:", e)
-
-        db.session.commit()
-        return jsonify({
-            'success': True,
-            'tipo': 'salida',
-            'message': f'¡Salida registrada con éxito para {empleado.nombre}!',
-            'hora': hora_actual_str,
-            'ordinarias': asistencia.horas_ordinarias,
-            'extras_diurnas': asistencia.horas_extras_diurnas
-        })
-
-@app.route('/api/empleados', methods=['POST'])
-def gestionar_empleados():
-    data = request.json
-    accion = data.get('accion')
-    company_id = data.get('company_id', 1)
-
-    if accion == 'crear':
-        cedula = data.get('cedula')
-        nombre = data.get('nombre')
-        area = data.get('area')
-        
-        if not cedula or not nombre or not area:
-            return jsonify({'success': False, 'message': 'Todos los campos son obligatorios.'}), 400
-            
-        existe = Employee.query.filter_by(cedula=cedula).first()
-        if existe:
-            return jsonify({'success': False, 'message': 'Ya existe un empleado con esta cédula.'}), 400
-            
-        nuevo = Employee(company_id=company_id, cedula=cedula, nombre=nombre, area=area)
-        db.session.add(nuevo)
-        db.session.commit()
-        return jsonify({'success': True, 'message': 'Empleado creado correctamente.'})
-
-    elif accion == 'eliminar':
-        cedula = data.get('cedula')
-        emp = Employee.query.filter_by(cedula=cedula, company_id=company_id).first()
-        if emp:
-            db.session.delete(emp)
-            db.session.commit()
-            return jsonify({'success': True, 'message': 'Empleado eliminado correctamente.'})
-        return jsonify({'success': False, 'message': 'Empleado no encontrado.'}), 404
-
-    return jsonify({'success': False, 'message': 'Acción no válida.'}), 400
-
-@app.route('/api/horarios', methods=['POST'])
-def guardar_horario():
-    data = request.json
-    company_id = data.get('company_id', 1)
-    area = data.get('area')
-    hora_entrada = data.get('hora_entrada')
-    hora_salida = data.get('hora_salida')
-    tolerancia = data.get('tolerancia_minutos', 15)
-
-    if not area:
-        return jsonify({'success': False, 'message': 'El área es obligatoria.'}), 400
-
-    cfg = ScheduleConfig.query.filter_by(company_id=company_id, area=area).first()
-    if not cfg:
-        cfg = ScheduleConfig(company_id=company_id, area=area)
-        db.session.add(cfg)
-
-    cfg.hora_entrada = hora_entrada
-    cfg.hora_salida = hora_salida
-    cfg.tolerancia_minutos = int(tolerancia)
-    db.session.commit()
-
-    return jsonify({'success': True, 'message': 'Configuración de horario guardada con éxito.'})
-
-@app.route('/api/reporte/excel', methods=['GET'])
-def descargar_reporte_excel():
-    company_id = request.args.get('company_id', 1, type=int)
-    registros = Attendance.query.filter_by(company_id=company_id).all()
-
-    wb = openpyxl.Workbook()
-    ws = wb.active
-    ws.title = "Reporte Asistencia"
-
-    # Encabezados
-    headers = [
-        "Cédula", "Nombre", "Fecha", "Hora Entrada", "Ubicación Válida Entrada", 
-        "Nota Entrada", "Hora Salida", "Ubicación Válida Salida", "Nota Salida", 
-        "H. Ordinarias", "H. Extras Diurnas", "H. Extras Nocturnas", "H. Extras Festivas"
+    area_names_list = [
+        "Administración",
+        "Comercial",
+        "i+D",
+        "Jefes",
+        "Logistica",
+        "Produccion",
+        "Servicios",
     ]
-    ws.append(headers)
+    area_ids = {}
+    for aname in area_names_list:
+      cur = c.execute(
+          "INSERT INTO areas(company_id,name,schedule_id) VALUES(?,?,?)",
+          (co, aname, sch),
+      )
+      area_ids[aname] = cur.lastrowid
 
-    for r in registros:
-        # Conversión de la cédula a entero (int) para solucionar el formato de texto en Excel
-        try:
-            cedula_val = int(r.cedula)
-        except ValueError:
-            cedula_val = r.cedula
+    personal_data = [
+        ("1020423063", "ADRIANA MARÍA GARCÍA ATENCIA", "Administración"),
+        ("43928418", "CINDY YULIANA MEJIA SALAZAR", "Administración"),
+        ("15518961", "LUIS FERNANDO SIERRA HERNANDEZ", "Administración"),
+        ("1035435578", "DANIELA ARENAS QUICENO", "Comercial"),
+        ("1020395866", "ELKIN DARIO JARAMILLO ORTIZ", "Comercial"),
+        ("1090516190", "FABRICIO ENRIQUE GÓMEZ PINTO", "Comercial"),
+        ("1017209920", "JOVER OVIER GONZALEZ VELASQUEZ", "Comercial"),
+        ("1000895890", "JUAN MANUEL ALCALA RINCON", "Comercial"),
+        ("1040751627", "DANIEL ESPINAL MONTOYA", "i+D"),
+        ("1020470477", "EDWIN FERNEY GALEANO MONSALVE", "i+D"),
+        ("1039458074", "JUAN SEBASTIAN FRANCO ARCILA", "i+D"),
+        ("1001478187", "JUANITA CASTAÑO LOPEZ", "i+D"),
+        ("98585959", "GUSTAVO ADOLFO DELGADO OCHOA", "Jefes"),
+        ("1037596166", "JUAN JULIO GOMEZ ESTRADA", "Jefes"),
+        ("1152691941", "SEBASTIAN QUIROZ FRANCO", "Jefes"),
+        ("8027635", "CARLOS ALBERTO TORRES MUÑOZ", "Logistica"),
+        ("1026140232", "WILLMAR ANDRES VARGAS RAIGOZA", "Logistica"),
+        ("79829313", "WILMER ANDRES URIBE PACHECO", "Logistica"),
+        ("1035861508", "ANTONY YEPES HOYOS", "Produccion"),
+        ("1017147274", "CRISTIAN ALEXIS RIVERA MUÑOZ", "Produccion"),
+        ("1017150704", "DANIEL STIVENS JIMENEZ ZULUAGA", "Produccion"),
+        ("1000641073", "DIEGO ALEJANDRO CARRILLO POSADA", "Produccion"),
+        ("1035856168", "DORLEY ALBEIRO MONTOYA HOYOS", "Produccion"),
+        ("8129719", "EDWIN SERNA BEDOYA", "Produccion"),
+        ("1059699272", "FRANK ESTEBAN PUERTA", "Produccion"),
+        ("1035878759", "GERMAN DAVID JIMENEZ ZULETA", "Produccion"),
+        ("1082491653", "JAVIER CAMILO JIMENEZ", "Produccion"),
+        ("71662540", "JOSE ANTONY RESTREPO RUA", "Produccion"),
+        ("1085225887", "JOSE LEONARDO DE ARMAS", "Produccion"),
+        ("71798123", "MAURICIO JAVIER CUELLO AGUAS", "Produccion"),
+        ("1036609208", "QUENYA VANESA LOPEZ VALENCIA", "Produccion"),
+        ("1025886942", "SANTIAGO HERNANDEZ", "Produccion"),
+        ("1017176777", "VIRGILIO HOYOS MENESES", "Produccion"),
+        ("1131619137", "LUIS CARLOS RUIZ RÍOS", "Produccion"),
+        ("4896718", "OSCAR GABRIEL CARRERA", "Produccion"),
+        ("1037946106", "CARLOS HERNAN NARANJO DAZA", "Servicios"),
+        ("71314530", "DIEGO ANDRES FLOREZ RAMÍREZ", "Servicios"),
+        ("1040748354", "ESTIVEN VALENCIA BEDOYA", "Servicios"),
+        ("71338768", "FREDY ALEXANDER GUISAO OQUENDO", "Servicios"),
+    ]
 
-        ws.append([
-            cedula_val, r.nombre, r.fecha, r.hora_entrada or "", 
-            "Sí" if r.ubicacion_valida_entrada else "No", r.nota_entrada or "",
-            r.hora_salida or "", "Sí" if r.ubicacion_valida_salida else "No", r.nota_salida or "",
-            r.horas_ordinarias, r.horas_extras_diurnas, r.horas_extras_nocturnas, r.horas_extras_festivas
-        ])
+    for idx, (pwd, nombre, area_name) in enumerate(personal_data):
+      aid = area_ids.get(area_name)
+      chosen_site = site_principal
+      cur = c.execute(
+          "INSERT INTO"
+          " employees(company_id,site_id,schedule_id,area_id,name,document,position)"
+          " VALUES(?,?,?,?,?,?,?)",
+          (co, chosen_site, sch, aid, nombre, pwd, area_name),
+      )
+      eid = cur.lastrowid
+      username = nombre.split()[0].lower() + "_" + pwd[-4:]
+      c.execute(
+          "INSERT INTO"
+          " users(company_id,employee_id,username,password_hash,role)"
+          " VALUES(?,?,?,?,?)",
+          (co, eid, username, hashpw(pwd), "empleado"),
+      )
 
-    output = BytesIO()
-    wb.save(output)
-    output.seek(0)
+    c.execute(
+        "INSERT INTO users(company_id,username,password_hash,role) VALUES(?,?,?,?)",
+        (co, "admin", hashpw("OMMA2016"), "administrador"),
+    )
+  c.commit()
+  c.close()
+
+
+def current_user():
+  uid = session.get("uid")
+  if not uid:
+    return None
+  c = db()
+  u = c.execute(
+      """
+        SELECT u.*, e.name as employee_name, e.document 
+        FROM users u 
+        LEFT JOIN employees e ON e.id = u.employee_id 
+        WHERE u.id=? AND u.active=1
+    """,
+      (uid,),
+  ).fetchone()
+  c.close()
+  if not u:
+    return None
+  u_dict = dict(u)
+  if u_dict["role"] == "administrador":
+    u_dict["display_name"] = "Admin (Administrador)"
+  else:
+    u_dict["display_name"] = u_dict["employee_name"] or u_dict["username"]
+  return u_dict
+
+
+def hav(lat1, lon1, lat2, lon2):
+  R = 6371000
+  p1 = math.radians(lat1)
+  p2 = math.radians(lat2)
+  dp = math.radians(lat2 - lat1)
+  dl = math.radians(lon2 - lon1)
+  a = (
+      math.sin(dp / 2) ** 2
+      + math.cos(p1) * math.cos(p2) * math.sin(dl / 2) ** 2
+  )
+  return R * 2 * math.atan2(math.sqrt(a), math.sqrt(1 - a))
+
+
+def sync_to_sheets(
+    employee_name,
+    document,
+    event_type,
+    event_time,
+    status,
+    late_minutes,
+    project_code="",
+):
+  try:
+    gc = gspread.service_account(filename="credentials.json")
+    sh = gc.open("Nombre_De_Su_Google_Sheets")
+    worksheet = sh.sheet1
+    worksheet.append_row([
+        employee_name,
+        document,
+        event_type,
+        event_time,
+        status,
+        late_minutes,
+        project_code,
+    ])
+  except Exception as e:
+    print(f"Error al sincronizar con Google Sheets: {e}")
+
+
+INDEX_HTML = """
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Asistencia Omma</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-dark bg-dark px-4 mb-4">
+        <span class="navbar-brand mb-0 h1">ASISTENCIA OMMA</span>
+        <div id="user-nav" class="text-white"></div>
+    </nav>
+    <div class="container" id="app-container">
+        <!-- Contenido dinámico -->
+    </div>
+    <script>
+    function getDeviceUUID() {
+        let name = "device_uuid=";
+        let decodedCookie = decodeURIComponent(document.cookie);
+        let ca = decodedCookie.split(';');
+        for(let i = 0; i < ca.length; i++) {
+            let c = ca[i];
+            while (c.charAt(0) == ' ') {
+                c = c.substring(1);
+            }
+            if (c.indexOf(name) == 0) {
+                return c.substring(name.length, c.length);
+            }
+        }
+        let uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+            var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+            return v.toString(16);
+        });
+        document.cookie = "device_uuid=" + uuid + "; max-age=315360000; path=/";
+        return uuid;
+    }
+
+    async function loadState() {
+        let res = await fetch('/api/state');
+        if (!res.ok) { renderLogin(); return; }
+        let data = await res.json();
+        renderDashboard(data);
+    }
     
-    return send_file(
-        output,
-        mimetype='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        as_attachment=True,
-        download_name=f'Reporte_Asistencia_Empresa_{company_id}.xlsx'
+    async function renderLogin() {
+        document.getElementById('user-nav').innerHTML = '';
+        document.getElementById('app-container').innerHTML = `
+            <div class="row justify-content-center mt-5">
+                <div class="col-md-5 card p-4 shadow">
+                    <div class="text-center mb-3">
+                        <img src="https://raw.githubusercontent.com/bigboxgore496/Asistencia/main/static/Omma%20Logo.jpg" alt="Omma Logo" style="max-height: 80px;" class="mb-3">
+                        <h3>Iniciar Sesión</h3>
+                    </div>
+                    <div id="login-error" class="alert alert-danger d-none"></div>
+                    <form onsubmit="doLogin(event)">
+                        <div class="mb-3">
+                            <label class="form-label">Nombre del Empleado</label>
+                            <input type="text" id="emp-search" class="form-control" placeholder="Escriba su nombre para autocompletar..." autocomplete="off" list="employees-datalist" required>
+                            <datalist id="employees-datalist"></datalist>
+                        </div>
+                        <div class="mb-3">
+                            <label class="form-label">Contraseña</label>
+                            <input type="password" id="password" class="form-control" placeholder="Ingrese su contraseña..." required>
+                        </div>
+                        <button type="submit" class="btn btn-dark w-100">Ingresar</button>
+                    </form>
+                </div>
+            </div>`;
+        
+        try {
+            let res = await fetch('/api/employees/list');
+            if (res.ok) {
+                let emps = await res.json();
+                let datalist = document.getElementById('employees-datalist');
+                if (datalist) {
+                    datalist.innerHTML = emps.map(e => `<option value="${e.name}">Área: ${e.area_name || 'N/A'}</option>`).join('');
+                }
+            }
+        } catch (e) {
+            console.error("No se pudo cargar la lista para autocompletar", e);
+        }
+    }
+
+    async function doLogin(e) {
+        e.preventDefault();
+        let searchEl = document.getElementById('emp-search');
+        let passEl = document.getElementById('password');
+        let errorDiv = document.getElementById('login-error');
+        
+        if (!searchEl || !passEl) return;
+
+        let inputVal = searchEl.value.trim();
+        let p = passEl.value.trim();
+        let deviceToken = getDeviceUUID();
+
+        try {
+            let res = await fetch('/api/login', {
+                method: 'POST', 
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({username: inputVal, password: p, device_token: deviceToken})
+            });
+            let data = await res.json();
+
+            if (res.ok) { 
+                loadState(); 
+            } else { 
+                if (errorDiv) {
+                    errorDiv.innerText = data.error || 'Error de autenticación'; 
+                    errorDiv.classList.remove('d-none'); 
+                } else {
+                    alert(data.error || 'Error de autenticación');
+                }
+            }
+        } catch (err) {
+            console.error("Error en login:", err);
+            alert("Ocurrió un error al conectar con el servidor.");
+        }
+    }
+
+    async function doLogout() {
+        await fetch('/api/logout', {method: 'POST'});
+        loadState();
+    }
+
+    function renderDashboard(data) {
+        let displayName = data.user.display_name || data.user.username;
+        document.getElementById('user-nav').innerHTML = `<span>${displayName}</span> <button class="btn btn-outline-light btn-sm ms-3" onclick="doLogout()">Cerrar sesión</button>`;
+        
+        let html = `
+            <div class="card p-4 shadow-sm mb-4">
+                <h2>Panel de Control - Omma Group</h2>
+                <p class="text-muted">Control de doble registro de ubicación (Ingreso y Salida independientes con GPS y detección automática de sedes).</p>
+            </div>`;
+
+        if (data.user.role === 'empleado') {
+            html += `
+                <div class="card p-4 shadow-sm text-center">
+                    <h3>Registro de Asistencia GPS</h3>
+                    <p class="text-muted">Debe realizar de forma independiente el registro de su <strong>Entrada</strong> y su <strong>Salida</strong> (El sistema detectará automáticamente en qué sede se encuentra).</p>
+                    <div class="my-3">
+                        <button class="btn btn-success btn-lg mx-2" onclick="markAttendance('Entrada')">Marcar Entrada</button>
+                        <button class="btn btn-danger btn-lg mx-2" onclick="markAttendance('Salida')">Marcar Salida</button>
+                    </div>
+                    <div id="mark-result" class="mt-3"></div>
+                </div>`;
+        } else {
+            window.allSysEmployees = data.employees;
+            window.allSysAreas = data.areas;
+            
+            html += `
+                <div class="card p-3 shadow-sm mb-4">
+                    <h4>Reportes del Sistema</h4>
+                    <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia (Excel)</a>
+                </div>
+                
+                <!-- SECCIÓN DE CONFIGURACIÓN DE SEDES MÚLTIPLES -->
+                <div class="card p-3 shadow-sm mb-4">
+                    <h4>Configuración de Sedes</h4>
+                    <form onsubmit="saveNewSite(event)" class="row g-3 mb-3">
+                        <div class="col-md-3">
+                            <label class="form-label">Nombre de Sede</label>
+                            <input type="text" id="site-name" class="form-control" placeholder="Ej: Planta Sur" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Latitud</label>
+                            <input type="number" step="any" id="site-lat" class="form-control" placeholder="Ej: 6.214110" required>
+                        </div>
+                        <div class="col-md-3">
+                            <label class="form-label">Longitud</label>
+                            <input type="number" step="any" id="site-lon" class="form-control" placeholder="Ej: -75.582689" required>
+                        </div>
+                        <div class="col-md-2">
+                            <label class="form-label">Radio (m)</label>
+                            <input type="number" id="site-radius" class="form-control" value="10" required>
+                        </div>
+                        <div class="col-md-1 d-flex align-items-end">
+                            <button type="submit" class="btn btn-dark w-100">Crear</button>
+                        </div>
+                    </form>
+                    <div id="sites-list-container">
+                        <ul class="list-group">
+                            ${data.sites.map(s => `
+                                <li class="list-group-item d-flex justify-content-between align-items-center">
+                                    <span><strong>${s.name}</strong> (Lat: ${s.latitude}, Lon: ${s.longitude}, Radio: ${s.radius_m}m)</span>
+                                    <div class="d-flex align-items-center gap-2">
+                                        <span class="badge bg-secondary">Sede ID: ${s.id}</span>
+                                        <button class="btn btn-outline-danger btn-sm" onclick="deleteSite(${s.id})">Eliminar</button>
+                                    </div>
+                                </li>
+                            `).join('')}
+                        </ul>
+                    </div>
+                </div>
+                
+                <div class="card p-3 shadow-sm mb-4">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <h4 class="mb-0">Empleados Registrados (<span id="emp-count-badge">${data.employees.length}</span>)</h4>
+                    </div>
+                    
+                    <div class="row g-2 mb-3">
+                        <div class="col-md-4">
+                            <input type="text" id="filter-search" class="form-control" placeholder="Buscar por nombre o cédula..." oninput="filterEmployees()">
+                        </div>
+                        <div class="col-md-4">
+                            <select id="filter-area" class="form-select" onchange="filterEmployees()">
+                                <option value="">Todas las Áreas</option>
+                                ${data.areas.map(a => `<option value="${a.id}">${a.name}</option>`).join('')}
+                            </select>
+                        </div>
+                        <div class="col-md-4">
+                            <select id="filter-sort" class="form-select" onchange="filterEmployees()">
+                                <option value="az">Orden Alfabético (A - Z)</option>
+                                <option value="za">Orden Alfabético (Z - A)</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <ul class="list-group list-group-flush" id="employees-list-container" style="max-height: 450px; overflow-y: auto;">
+                        <!-- Renderizado dinámico -->
+                    </ul>
+                </div>`;
+            setTimeout(filterEmployees, 50);
+        }
+        document.getElementById('app-container').innerHTML = html;
+    }
+
+    async function saveNewSite(e) {
+        e.preventDefault();
+        let name = document.getElementById('site-name').value.trim();
+        let latitude = document.getElementById('site-lat').value;
+        let longitude = document.getElementById('site-lon').value;
+        let radius_m = document.getElementById('site-radius').value;
+
+        let res = await fetch('/api/admin/sites/add', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({name, latitude, longitude, radius_m})
+        });
+
+        if (res.ok) {
+            alert('Sede creada exitosamente.');
+            loadState();
+        } else {
+            let data = await res.json();
+            alert(data.error || 'Error al crear la sede');
+        }
+    }
+
+    async function deleteSite(siteId) {
+        if (!confirm('¿Está seguro de eliminar esta sede?')) return;
+        let res = await fetch(`/api/admin/sites/delete/${siteId}`, {method: 'POST'});
+        if (res.ok) {
+            alert('Sede eliminada correctamente.');
+            loadState();
+        } else {
+            let data = await res.json();
+            alert(data.error || 'Error al eliminar la sede');
+        }
+    }
+
+    function filterEmployees() {
+        if (!window.allSysEmployees) return;
+        let search = document.getElementById('filter-search').value.toLowerCase();
+        let areaId = document.getElementById('filter-area').value;
+        let sortOrder = document.getElementById('filter-sort').value;
+
+        let filtered = window.allSysEmployees.filter(e => {
+            let matchSearch = e.name.toLowerCase().includes(search) || (e.document && e.document.includes(search));
+            let matchArea = areaId === "" || e.area_id == areaId;
+            return matchSearch && matchArea;
+        });
+
+        filtered.sort((a, b) => {
+            if (sortOrder === 'az') return a.name.localeCompare(b.name);
+            if (sortOrder === 'za') return b.name.localeCompare(a.name);
+            return 0;
+        });
+
+        let container = document.getElementById('employees-list-container');
+        document.getElementById('emp-count-badge').innerText = filtered.length;
+
+        if (filtered.length === 0) {
+            container.innerHTML = '<li class="list-group-item text-center text-muted">No se encontraron empleados</li>';
+            return;
+        }
+
+        container.innerHTML = filtered.map(e => `
+            <li class="list-group-item d-flex justify-content-between align-items-center">
+                <div>
+                    <strong>${e.name}</strong><br>
+                    <small class="text-muted">Doc: ${e.document || 'N/A'}</small>
+                </div>
+                <div class="d-flex align-items-center gap-2">
+                    <span class="badge bg-primary">${e.area_name || 'Sin área'}</span>
+                    ${e.user_id ? `<button class="btn btn-outline-warning btn-sm" onclick="resetDevice(${e.user_id})">Reiniciar Celular</button>` : ''}
+                </div>
+            </li>`).join('');
+    }
+
+    async function resetDevice(userId) {
+        if (!confirm('¿Está seguro de desvincular el dispositivo de este empleado?')) return;
+        let res = await fetch(`/api/admin/reset-device/${userId}`, {method: 'POST'});
+        if (res.ok) {
+            alert('Dispositivo desvinculado con éxito.');
+            loadState();
+        } else {
+            let data = await res.json();
+            alert(data.error || 'Error al desvincular dispositivo');
+        }
+    }
+
+    async function markAttendance(type) {
+        if (!navigator.geolocation) { alert('Geolocalización no soportada'); return; }
+        
+        let projectCode = '';
+        if (type === 'Salida') {
+            let inputCode = prompt('Ingrese el Código del o los Proyectos en los que Laboró Ej: JJ 496', '');
+            if (inputCode === null) return;
+            projectCode = inputCode.trim().toUpperCase();
+            let regex = /^[A-Z]{2}\s?\d{3}$/;
+            if (!regex.test(projectCode)) {
+                alert('Formato de código de proyecto inválido. Debe ser 2 letras y 3 números (Ej: JJ 496).');
+                return;
+            }
+        }
+
+        navigator.geolocation.getCurrentPosition(async pos => {
+            let lat = pos.coords.latitude;
+            let lon = pos.coords.longitude;
+            
+            let res = await fetch('/api/mark', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({event_type: type, latitude: lat, longitude: lon, project_code: projectCode})
+            });
+            let data = await res.json();
+
+            if (res.status === 400 && data.requires_location) {
+                let locationNote = prompt(data.error + "\\n¿Dónde se encuentra?", "");
+                if (!locationNote || locationNote.trim() === "") {
+                    alert("Debe indicar dónde se encuentra al estar fuera del rango de las sedes.");
+                    return;
+                }
+                locationNote = locationNote.trim();
+
+                let res2 = await fetch('/api/mark', {
+                    method: 'POST', headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({event_type: type, latitude: lat, longitude: lon, project_code: projectCode, location_note: locationNote})
+                });
+                let data2 = await res2.json();
+                if (res2.ok) {
+                    let projText = projectCode ? ` | Proyecto: ${projectCode}` : '';
+                    document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">Ubicación GPS registrada para ${type} a las ${data2.time}${projText} - Sede/Lugar: ${locationNote}</div>`;
+                } else {
+                    document.getElementById('mark-result').innerHTML = `<div class="alert alert-danger">${data2.error}</div>`;
+                }
+            } else if (res.ok) {
+                let projText = projectCode ? ` | Proyecto: ${projectCode}` : '';
+                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">Ubicación GPS registrada para ${type} a las ${data.time}${projText} - Sede detectada: ${data.detected_site} (${data.status})</div>`;
+            } else {
+                document.getElementById('mark-result').innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
+            }
+        }, err => { alert('Para marcar ' + type + ' es obligatorio permitir el acceso a la ubicación GPS: ' + err.message); }, { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 });
+    }
+
+    loadState();
+    </script>
+</body>
+</html>
+"""
+
+
+@app.route("/")
+def index():
+  return render_template_string(INDEX_HTML)
+
+
+@app.get("/api/employees/list")
+def employees_list():
+  c = db()
+  rows = c.execute("""
+        SELECT e.id, e.name, u.username, ar.name as area_name 
+        FROM employees e 
+        JOIN users u ON u.employee_id = e.id 
+        LEFT JOIN areas ar ON ar.id = e.area_id 
+        ORDER BY e.name ASC
+    """).fetchall()
+  c.close()
+  return jsonify([dict(r) for r in rows])
+
+
+@app.post("/api/login")
+def login():
+  d = request.json or {}
+  login_input = (d.get("username") or "").strip()
+  p = d.get("password") or ""
+  client_device_token = (d.get("device_token") or "").strip()
+  p_hash = hashpw(p)
+
+  c = db()
+  rows = c.execute("""
+        SELECT u.*, e.name as emp_name, e.document as emp_doc 
+        FROM users u 
+        LEFT JOIN employees e ON e.id = u.employee_id
+        WHERE u.active = 1
+    """).fetchall()
+  c.close()
+
+  matched_user = None
+  input_norm = strip_accents(login_input).lower()
+
+  for r in rows:
+    uname = (r["username"] or "").strip()
+    ename = (r["emp_name"] or "").strip()
+    edoc = (r["emp_doc"] or "").strip()
+
+    if input_norm == strip_accents(ename).lower() or input_norm == strip_accents(
+        uname
+    ).lower():
+      if r["password_hash"] == p_hash:
+        matched_user = dict(r)
+        break
+
+  if not matched_user:
+    return jsonify(error="Nombre o contraseña incorrectos"), 401
+
+  if matched_user["role"] == "empleado":
+    c = db()
+    if not matched_user["device_token"]:
+      if client_device_token:
+        c.execute(
+            "UPDATE users SET device_token = ? WHERE id = ?",
+            (client_device_token, matched_user["id"]),
+        )
+        c.commit()
+        matched_user["device_token"] = client_device_token
+    elif matched_user["device_token"] != client_device_token:
+      c.close()
+      return jsonify(
+          error=(
+              "Este usuario ya está vinculado a otro dispositivo móvil."
+              " Contacte al administrador para reiniciar el dispositivo."
+          )
+      ), 403
+    c.close()
+
+  session["uid"] = matched_user["id"]
+  return jsonify(user=matched_user)
+
+
+@app.post("/api/admin/reset-device/<int:user_id>")
+def reset_device(user_id):
+  u = current_user()
+  if not u or u["role"] != "administrador":
+    return jsonify(error="No autorizado"), 403
+  c = db()
+  c.execute("UPDATE users SET device_token = NULL WHERE id = ?", (user_id,))
+  c.commit()
+  c.close()
+  return jsonify(ok=True)
+
+
+@app.post("/api/logout")
+def logout():
+  session.clear()
+  return jsonify(ok=True)
+
+
+@app.get("/api/state")
+def state():
+  u = current_user()
+  if not u:
+    return jsonify(error="No autenticado"), 401
+  c = db()
+  cid = u["company_id"]
+  companies = [
+      dict(x) for x in c.execute("SELECT * FROM companies WHERE id=?", (cid,))
+  ]
+  sites = [
+      dict(x) for x in c.execute("SELECT * FROM sites WHERE company_id=?", (cid,))
+  ]
+  schedules = [
+      dict(x)
+      for x in c.execute("SELECT * FROM schedules WHERE company_id=?", (cid,))
+  ]
+  areas = [
+      dict(x)
+      for x in c.execute(
+          """
+        SELECT a.*, s.name schedule_name, s.mon, s.tue, s.wed, s.thu, s.fri, s.sat, s.sun 
+        FROM areas a LEFT JOIN schedules s ON s.id=a.schedule_id WHERE a.company_id=?
+    """,
+          (cid,),
+      )
+  ]
+  employees = [
+      dict(x)
+      for x in c.execute(
+          """SELECT e.*,s.name site_name,h.name schedule_name, ar.name area_name, u.id as user_id, u.device_token FROM employees e LEFT JOIN sites s ON s.id=e.site_id LEFT JOIN schedules h ON h.id=e.schedule_id LEFT JOIN areas ar ON ar.id=e.area_id LEFT JOIN users u ON u.employee_id=e.id WHERE e.company_id=? ORDER BY e.name ASC""",
+          (cid,),
+      )
+  ]
+  attendance = [
+      dict(x)
+      for x in c.execute(
+          """SELECT a.*,e.name employee_name FROM attendance a JOIN employees e ON e.id=a.employee_id WHERE e.company_id=? ORDER BY a.id DESC LIMIT 100""",
+          (cid,),
+      )
+  ]
+  incidents = [
+      dict(x)
+      for x in c.execute(
+          """SELECT i.*,e.name employee_name FROM incidents i JOIN employees e ON e.id=i.employee_id WHERE e.company_id=? ORDER BY i.id DESC""",
+          (cid,),
+      )
+  ]
+  c.close()
+  return jsonify(
+      companies=companies,
+      sites=sites,
+      schedules=schedules,
+      areas=areas,
+      employees=employees,
+      attendance=attendance,
+      incidents=incidents,
+      user=u,
+  )
+
+
+@app.post("/api/mark")
+def mark():
+  try:
+    u = current_user()
+    if not u or u["role"] != "empleado" or not u["employee_id"]:
+      return jsonify(error="Solo un empleado autenticado puede marcar"), 403
+
+    d = request.json or {}
+    typ = d.get("event_type")
+    lat = d.get("latitude")
+    lon = d.get("longitude")
+    project_code = (d.get("project_code") or "").strip().upper()
+    location_note = (d.get("location_note") or "").strip()
+
+    if typ not in ("Entrada", "Salida"):
+      return jsonify(error="Tipo inválido"), 400
+
+    if lat is None or lon is None:
+      return jsonify(
+          error=(
+              f"La ubicación GPS es obligatoria para registrar la {typ.lower()}."
+          )
+      ), 400
+
+    if typ == "Salida" and not project_code:
+      return jsonify(
+          error="El código de proyecto es obligatorio al marcar salida."
+      ), 400
+
+    dt = datetime.now(COLOMBIA_TZ)
+    today_str = dt.date().isoformat()
+
+    c = db()
+    existing_mark = c.execute(
+        """SELECT id FROM attendance 
+           WHERE employee_id = ? AND event_type = ? AND DATE(event_time) = ?""",
+        (u["employee_id"], typ, today_str),
+    ).fetchone()
+
+    if existing_mark:
+      c.close()
+      return jsonify(
+          error=(
+              f"Ya ha registrado su ubicación de {typ} el día de hoy. No se"
+              " permiten registros duplicados del mismo evento."
+          )
+      ), 400
+
+    # OBTENEMOS TODAS LAS SEDES DE LA EMPRESA PARA EVALUAR PROXIMIDAD
+    company_sites = c.execute(
+        "SELECT * FROM sites WHERE company_id = ?", 
+        (u["company_id"],)
+    ).fetchall()
+
+    min_dist = float('inf')
+    matched_site = None
+    valid = False
+
+    for s in company_sites:
+      try:
+        d_val = hav(float(lat), float(lon), float(s["latitude"]), float(s["longitude"]))
+        if d_val < min_dist:
+          min_dist = d_val
+          matched_site = dict(s)
+      except Exception:
+        continue
+
+    if matched_site:
+      radius = matched_site.get("radius_m", 10) or 10
+      if min_dist <= radius:
+        valid = True
+
+    dist = min_dist if matched_site else 0.0
+    detected_site_name = matched_site["name"] if matched_site else "Ninguna"
+
+    if not valid and not location_note:
+      c.close()
+      return jsonify(
+          requires_location=True,
+          error=f"Se encuentra fuera del rango de cualquier sede autorizada (la más cercana está a {dist:.0f}m)."
+      ), 400
+
+    row = c.execute(
+        """SELECT e.*, 
+                            COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
+                            COALESCE(ar_sch.wed, h.wed) wed, COALESCE(ar_sch.thu, h.thu) thu, 
+                            COALESCE(ar_sch.fri, h.fri) fri, COALESCE(ar_sch.sat, h.sat) sat, 
+                            COALESCE(ar_sch.sun, h.sun) sun,
+                            COALESCE(ar_sch.tolerance_minutes, h.tolerance_minutes) tolerance_minutes
+                            FROM employees e
+                            LEFT JOIN schedules h ON h.id=e.schedule_id 
+                            LEFT JOIN areas ar ON ar.id=e.area_id
+                            LEFT JOIN schedules ar_sch ON ar_sch.id=ar.schedule_id
+                            WHERE e.id=? AND e.company_id=?""",
+        (u["employee_id"], u["company_id"]),
+    ).fetchone()
+
+    if not row:
+      c.close()
+      return jsonify(error="Empleado no encontrado"), 404
+
+    status = "Registrada"
+    late = 0
+    extra_mins = 0
+    ed_mins, en_mins, efd_mins, efn_mins = 0, 0, 0, 0
+
+    days = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+    day_key = days[dt.weekday()]
+    period = row[day_key] if day_key in row.keys() else ""
+
+    if typ == "Entrada" and period:
+      start = int(period[:2]) * 60 + int(period[3:5])
+      actual = dt.hour * 60 + dt.minute
+      late = max(0, actual - start - int(row["tolerance_minutes"] or 0))
+      if late == 0:
+        status = "A tiempo"
+      else:
+        h_late = late // 60
+        m_late = late % 60
+        status = f"Retardo {late} min ({h_late}h {m_late}m)"
+
+    elif typ == "Salida" and period:
+      end = int(period[6:8]) * 60 + int(period[9:11])
+      end_dt = dt.replace(hour=int(period[6:8]), minute=int(period[9:11]), second=0, microsecond=0)
+      
+      actual = dt.hour * 60 + dt.minute
+      diff = actual - end
+      if diff < 0:
+        early_mins = abs(diff)
+        h_early = early_mins // 60
+        m_early = early_mins % 60
+        status = f"Salida anticipada {early_mins} min ({h_early}h {m_early}m antes)"
+      elif diff > 0:
+        extra_mins = diff
+        h_extra = extra_mins // 60
+        m_extra = extra_mins % 60
+        status = f"Hora extra {extra_mins} min ({h_extra}h {m_extra}m)"
+        
+        desglose = calcular_horas_extras_discriminadas(end_dt, dt)
+        ed_mins = desglose["extra_diurna"]
+        en_mins = desglose["extra_nocturna"]
+        efd_mins = desglose["extra_festiva_diurna"]
+        efn_mins = desglose["extra_festiva_nocturna"]
+      else:
+        status = "A tiempo"
+
+    if not valid:
+      status = f"{status} (Fuera de zona a {dist:.0f}m)"
+
+    target_site_id = matched_site["id"] if matched_site else None
+
+    cur = c.execute(
+        """INSERT INTO
+        attendance(employee_id,event_type,event_time,latitude,longitude,distance_m,gps_valid,status,late_minutes,overtime_minutes,project_code,location_note,extra_diurna_mins,extra_nocturna_mins,extra_festiva_diurna_mins,extra_festiva_nocturna_mins)
+        VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+        (
+            u["employee_id"],
+            typ,
+            dt.isoformat(timespec="seconds"),
+            lat,
+            lon,
+            dist,
+            int(valid),
+            status,
+            late,
+            extra_mins,
+            project_code,
+            location_note,
+            ed_mins,
+            en_mins,
+            efd_mins,
+            efn_mins,
+        ),
     )
 
-if __name__ == '__main__':
-    app.run(host='0.0.0.0', port=5000, debug=True)
+    emp_info = c.execute(
+        "SELECT name, document FROM employees WHERE id=?", (u["employee_id"],)
+    ).fetchone()
+    c.commit()
+    c.close()
+
+    if emp_info:
+      try:
+        sync_to_sheets(
+            emp_info["name"],
+            emp_info["document"],
+            typ,
+            dt.strftime("%Y-%m-%d %H:%M:%S"),
+            status,
+            late,
+            project_code,
+        )
+      except Exception as sheet_err:
+        print(f"Aviso Google Sheets: {sheet_err}")
+
+    time_ampm = dt.strftime("%I:%M%p")
+    return jsonify(
+        id=cur.lastrowid,
+        time=time_ampm,
+        status=status,
+        gps_valid=valid,
+        late_minutes=late,
+        project_code=project_code,
+        location_note=location_note,
+        detected_site=detected_site_name
+    )
+  except Exception as e:
+    return jsonify(error=f"Excepción interna: {str(e)}"), 500
+
+
+@app.get("/api/report/csv")
+def export_csv():
+  u = current_user()
+  if not u or u["role"] != "administrador":
+    return jsonify(error="No autorizado"), 403
+
+  c = db()
+  rows = c.execute(
+      """
+        SELECT a.id, e.id as emp_id, e.name as employee_name, e.document, s.name as site_name, ar.name as area_name,
+               a.event_type, a.event_time, a.latitude, a.longitude, a.distance_m, a.status, a.late_minutes, a.overtime_minutes, a.project_code, a.location_note,
+               a.extra_diurna_mins, a.extra_nocturna_mins, a.extra_festiva_diurna_mins, a.extra_festiva_nocturna_mins
+        FROM attendance a 
+        JOIN employees e ON e.id = a.employee_id 
+        LEFT JOIN sites s ON s.id = e.site_id 
+        LEFT JOIN areas ar ON ar.id = e.area_id
+        WHERE e.company_id = ? 
+        ORDER BY a.event_time ASC
+    """,
+      (u["company_id"],),
+  ).fetchall()
+  c.close()
+
+  daily_records = {}
+  for r in rows:
+    dt_str = r["event_time"]
+    try:
+      dt_obj = datetime.fromisoformat(dt_str)
+    except Exception:
+      try:
+        dt_obj = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
+      except Exception:
+        continue
+
+    date_key = dt_obj.strftime("%Y-%m-%d")
+    emp_id = r["emp_id"]
+    key = (emp_id, date_key)
+
+    if key not in daily_records:
+      daily_records[key] = {
+          "employee_name": r["employee_name"],
+          "document": r["document"],
+          "area_name": r["area_name"],
+          "site_name": r["site_name"] or "",
+          "date": dt_obj.strftime("%d-%b-%Y").lower(),
+          "entrada": None,
+          "salida": None,
+      }
+
+    event_info = {
+        "time": dt_obj.strftime("%I:%M:%S %p").lower(),
+        "lat": r["latitude"],
+        "lon": r["longitude"],
+        "distance": r["distance_m"],
+        "status": r["status"],
+        "late": r["late_minutes"],
+        "overtime": r["overtime_minutes"],
+        "project_code": r["project_code"],
+        "location_note": r["location_note"] or "",
+        "extra_diurna_mins": r["extra_diurna_mins"] or 0,
+        "extra_nocturna_mins": r["extra_nocturna_mins"] or 0,
+        "extra_festiva_diurna_mins": r["extra_festiva_diurna_mins"] or 0,
+        "extra_festiva_nocturna_mins": r["extra_festiva_nocturna_mins"] or 0,
+    }
+
+    if r["event_type"] == "Entrada":
+      daily_records[key]["entrada"] = event_info
+    elif r["event_type"] == "Salida":
+      daily_records[key]["salida"] = event_info
+
+  wb = openpyxl.Workbook()
+  ws = wb.active
+  ws.title = "Reporte Asistencia"
+
+  headers = [
+      "Empleado",
+      "Documento",
+      "Área",
+      "Sede Base",
+      "Fecha",
+      "Entrada - Hora",
+      "Entrada - GPS",
+      "Entrada - Distancia (m)",
+      "Entrada - Lugar / Nota",
+      "Entrada - Estado",
+      "Salida - Hora",
+      "Salida - GPS",
+      "Salida - Distancia (m)",
+      "Salida - Proyecto",
+      "Salida - Lugar / Nota",
+      "Salida - Estado",
+      "Minutos Retardo",
+      "Total Extras (min)",
+      "Extra Diurna (Horas)",
+      "Extra Nocturna (Horas)",
+      "Extra Festiva Diurna (Horas)",
+      "Extra Festiva Nocturna (Horas)"
+  ]
+  ws.append(headers)
+
+  for key, rec in sorted(
+      daily_records.items(), key=lambda x: (x[0][1], x[1]["employee_name"])
+  ):
+    ent = rec["entrada"] or {}
+    sal = rec["salida"] or {}
+
+    ent_maps = ""
+    if ent.get("lat") is not None and ent.get("lon") is not None:
+      try:
+        ent_maps = (
+            f'=HYPERLINK("https://www.google.com/maps?q={float(ent["lat"])},'
+            f'{float(ent["lon"])}", "Ver Entrada")'
+        )
+      except Exception:
+        pass
+ 
+    sal_maps = ""
+    if sal.get("lat") is not None and sal.get("lon") is not None:
+      try:
+        sal_maps = (
+            f'=HYPERLINK("https://www.google.com/maps?q={float(sal["lat"])},'
+            f'{float(sal["lon"])}", "Ver Salida")'
+        )
+      except Exception:
+        pass
+
+    ent_dist = (
+        int(round(ent["distance"])) if ent.get("distance") is not None else ""
+    )
+    sal_dist = (
+        int(round(sal["distance"])) if sal.get("distance") is not None else ""
+    )
+
+    ed_h = round(sal.get("extra_diurna_mins", 0) / 60.0, 2)
+    en_h = round(sal.get("extra_nocturna_mins", 0) / 60.0, 2)
+    efd_h = round(sal.get("extra_festiva_diurna_mins", 0) / 60.0, 2)
+    efn_h = round(sal.get("extra_festiva_nocturna_mins", 0) / 60.0, 2)
+
+    row_data = [
+        rec["employee_name"],
+        str(rec["document"] or ""),
+        rec["area_name"] or "",
+        rec["site_name"] or "",
+        rec["date"],
+        ent.get("time", ""),
+        ent_maps,
+        ent_dist,
+        ent.get("location_note", ""),
+        ent.get("status", ""),
+        sal.get("time", ""),
+        sal_maps,
+        sal_dist,
+        sal.get("project_code", ""),
+        sal.get("location_note", ""),
+        sal.get("status", ""),
+        int(ent.get("late", 0) or 0),
+        int(sal.get("overtime", 0) or 0),
+        ed_h,
+        en_h,
+        efd_h,
+        efn_h
+    ]
+    ws.append(row_data)
+
+  file_stream = io.BytesIO()
+  wb.save(file_stream)
+  file_stream.seek(0)
+
+  output = make_response(file_stream.getvalue())
+  output.headers["Content-Disposition"] = (
+      "attachment; filename=reporte_asistencia.xlsx"
+  )
+  output.headers["Content-Type"] = (
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+  )
+  return output
+
+
+@app.post("/api/admin/sites/add")
+def admin_add_site():
+  u = current_user()
+  if not u or u["role"] != "administrador":
+    return jsonify(error="No autorizado"), 403
+  
+  d = request.json or {}
+  name = (d.get("name") or "").strip()
+  lat = d.get("latitude")
+  lon = d.get("longitude")
+  radius = d.get("radius_m", 10)
+  
+  if not name or lat is None or lon is None:
+    return jsonify(error="Nombre, latitud y longitud son obligatorios"), 400
+      
+  c = db()
+  c.execute(
+      "INSERT INTO sites(company_id, name, latitude, longitude, radius_m) VALUES(?, ?, ?, ?, ?)",
+      (u["company_id"], name, float(lat), float(lon), int(radius))
+  )
+  c.commit()
+  c.close()
+  return jsonify(ok=True)
+
+
+@app.post("/api/admin/sites/delete/<int:site_id>")
+def admin_delete_site(site_id):
+  u = current_user()
+  if not u or u["role"] != "administrador":
+    return jsonify(error="No autorizado"), 403
+  
+  c = db()
+  site = c.execute("SELECT id FROM sites WHERE id = ? AND company_id = ?", (site_id, u["company_id"])).fetchone()
+  if not site:
+    c.close()
+    return jsonify(error="Sede no encontrada"), 404
+
+  try:
+    c.execute("DELETE FROM sites WHERE id = ?", (site_id,))
+    c.commit()
+    c.close()
+    return jsonify(ok=True)
+  except Exception as e:
+    c.close()
+    return jsonify(error=f"No se puede eliminar la sede porque está en uso: {str(e)}"), 400
+
+
+init_db()
+
+if __name__ == "__main__":
+  app.run(debug=True, host="0.0.0.0", port=5000)
