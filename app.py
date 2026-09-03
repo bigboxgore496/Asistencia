@@ -433,14 +433,14 @@ INDEX_HTML = """
         let html = `
             <div class="card p-4 shadow-sm mb-4">
                 <h2>Panel de Control - Omma Group</h2>
-                <p class="text-muted">Control de doble registro de ubicación (Ingreso y Salida independientes con GPS).</p>
+                <p class="text-muted">Control de doble registro de ubicación (Ingreso y Salida independientes con GPS y detección automática de sedes).</p>
             </div>`;
 
         if (data.user.role === 'empleado') {
             html += `
                 <div class="card p-4 shadow-sm text-center">
                     <h3>Registro de Asistencia GPS</h3>
-                    <p class="text-muted">Debe realizar de forma independiente el registro de su <strong>Entrada</strong> y su <strong>Salida</strong> (Radio 200m).</p>
+                    <p class="text-muted">Debe realizar de forma independiente el registro de su <strong>Entrada</strong> y su <strong>Salida</strong> (El sistema detectará automáticamente en qué sede se encuentra).</p>
                     <div class="my-3">
                         <button class="btn btn-success btn-lg mx-2" onclick="markAttendance('Entrada')">Marcar Entrada</button>
                         <button class="btn btn-danger btn-lg mx-2" onclick="markAttendance('Salida')">Marcar Salida</button>
@@ -457,13 +457,13 @@ INDEX_HTML = """
                     <a href="/api/report/csv" class="btn btn-success w-100">Descargar Reporte de Asistencia (Excel)</a>
                 </div>
                 
-                <!-- NUEVA SECCIÓN DE CONFIGURACIÓN DE SEDES -->
+                <!-- SECCIÓN DE CONFIGURACIÓN DE SEDES MÚLTIPLES -->
                 <div class="card p-3 shadow-sm mb-4">
                     <h4>Configuración de Sedes</h4>
                     <form onsubmit="saveNewSite(event)" class="row g-3 mb-3">
                         <div class="col-md-3">
                             <label class="form-label">Nombre de Sede</label>
-                            <input type="text" id="site-name" class="form-control" placeholder="Ej: Sede Bodega" required>
+                            <input type="text" id="site-name" class="form-control" placeholder="Ej: Planta Sur" required>
                         </div>
                         <div class="col-md-3">
                             <label class="form-label">Latitud</label>
@@ -576,7 +576,6 @@ INDEX_HTML = """
                 </div>
                 <div class="d-flex align-items-center gap-2">
                     <span class="badge bg-primary">${e.area_name || 'Sin área'}</span>
-                    <span class="badge bg-secondary">${e.site_name || 'Sin sede'}</span>
                     ${e.user_id ? `<button class="btn btn-outline-warning btn-sm" onclick="resetDevice(${e.user_id})">Reiniciar Celular</button>` : ''}
                 </div>
             </li>`).join('');
@@ -622,7 +621,7 @@ INDEX_HTML = """
             if (res.status === 400 && data.requires_location) {
                 let locationNote = prompt(data.error + "\\n¿Dónde se encuentra?", "");
                 if (!locationNote || locationNote.trim() === "") {
-                    alert("Debe indicar dónde se encuentra al estar fuera del rango de la sede.");
+                    alert("Debe indicar dónde se encuentra al estar fuera del rango de las sedes.");
                     return;
                 }
                 locationNote = locationNote.trim();
@@ -640,7 +639,7 @@ INDEX_HTML = """
                 }
             } else if (res.ok) {
                 let projText = projectCode ? ` | Proyecto: ${projectCode}` : '';
-                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">Ubicación GPS registrada para ${type} a las ${data.time}${projText} - Estado: ${data.status}</div>`;
+                document.getElementById('mark-result').innerHTML = `<div class="alert alert-success">Ubicación GPS registrada para ${type} a las ${data.time}${projText} - Sede detectada: ${data.detected_site} (${data.status})</div>`;
             } else {
                 document.getElementById('mark-result').innerHTML = `<div class="alert alert-danger">${data.error}</div>`;
             }
@@ -859,15 +858,48 @@ def mark():
           )
       ), 400
 
+    # OBTENEMOS TODAS LAS SEDES DE LA EMPRESA PARA EVALUAR PROXIMIDAD
+    company_sites = c.execute(
+        "SELECT * FROM sites WHERE company_id = ?", 
+        (u["company_id"],)
+    ).fetchall()
+
+    min_dist = float('inf')
+    matched_site = None
+    valid = False
+
+    for s in company_sites:
+      try:
+        d_val = hav(float(lat), float(lon), float(s["latitude"]), float(s["longitude"]))
+        if d_val < min_dist:
+          min_dist = d_val
+          matched_site = dict(s)
+      except Exception:
+        continue
+
+    if matched_site:
+      radius = matched_site.get("radius_m", 10) or 10
+      if min_dist <= radius:
+        valid = True
+
+    dist = min_dist if matched_site else 0.0
+    detected_site_name = matched_site["name"] if matched_site else "Ninguna"
+
+    if not valid and not location_note:
+      c.close()
+      return jsonify(
+          requires_location=True,
+          error=f"Se encuentra fuera del rango de cualquier sede autorizada (la más cercana está a {dist:.0f}m)."
+      ), 400
+
     row = c.execute(
-        """SELECT e.*, si.latitude site_lat, si.longitude site_lon, si.radius_m, si.name default_site_name,
+        """SELECT e.*, 
                             COALESCE(ar_sch.mon, h.mon) mon, COALESCE(ar_sch.tue, h.tue) tue, 
                             COALESCE(ar_sch.wed, h.wed) wed, COALESCE(ar_sch.thu, h.thu) thu, 
                             COALESCE(ar_sch.fri, h.fri) fri, COALESCE(ar_sch.sat, h.sat) sat, 
                             COALESCE(ar_sch.sun, h.sun) sun,
                             COALESCE(ar_sch.tolerance_minutes, h.tolerance_minutes) tolerance_minutes
                             FROM employees e
-                            LEFT JOIN sites si ON si.id=e.site_id 
                             LEFT JOIN schedules h ON h.id=e.schedule_id 
                             LEFT JOIN areas ar ON ar.id=e.area_id
                             LEFT JOIN schedules ar_sch ON ar_sch.id=ar.schedule_id
@@ -878,29 +910,6 @@ def mark():
     if not row:
       c.close()
       return jsonify(error="Empleado no encontrado"), 404
-
-    dist = 0.0
-    valid = True
-
-    if row["site_lat"] is not None and row["site_lon"] is not None:
-      try:
-        dist = hav(
-            float(lat),
-            float(lon),
-            float(row["site_lat"]),
-            float(row["site_lon"]),
-        )
-        radius = row["radius_m"] if row["radius_m"] is not None else 10
-        valid = dist <= radius
-      except Exception as e:
-        print(f"Aviso cálculo GPS: {e}")
-
-    if not valid and not location_note:
-      c.close()
-      return jsonify(
-          requires_location=True,
-          error=f"Se encuentra fuera del rango de la sede autorizada (a {dist:.0f}m)."
-      ), 400
 
     status = "Registrada"
     late = 0
@@ -949,6 +958,9 @@ def mark():
 
     if not valid:
       status = f"{status} (Fuera de zona a {dist:.0f}m)"
+
+    # Asociamos el site_id detectado al registro si aplica, o guardamos con la sede más cercana
+    target_site_id = matched_site["id"] if matched_site else None
 
     cur = c.execute(
         """INSERT INTO
@@ -1003,6 +1015,7 @@ def mark():
         late_minutes=late,
         project_code=project_code,
         location_note=location_note,
+        detected_site=detected_site_name
     )
   except Exception as e:
     return jsonify(error=f"Excepción interna: {str(e)}"), 500
@@ -1086,7 +1099,7 @@ def export_csv():
       "Empleado",
       "Documento",
       "Área",
-      "Sede",
+      "Sede Base",
       "Fecha",
       "Entrada - Hora",
       "Entrada - GPS",
@@ -1186,7 +1199,6 @@ def export_csv():
   return output
 
 
-# NUEVAS RUTAS PARA ADMINISTRAR SEDES DESDE EL PANEL
 @app.post("/api/admin/sites/add")
 def admin_add_site():
   u = current_user()
