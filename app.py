@@ -125,7 +125,7 @@ def init_db():
     cur = c.execute(
         "INSERT INTO sites(company_id,name,latitude,longitude,radius_m)"
         " VALUES(?,?,?,?,?)",
-        (co, "Sede Principal", 6.214110727151654, -75.58268995990919, 200),
+        (co, "Sede Principal", 6.214110727151654, -75.58268995990919, 10),
     )
     site_principal = cur.lastrowid
 
