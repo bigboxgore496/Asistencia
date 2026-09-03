@@ -3,6 +3,7 @@ import hashlib
 import io
 import math
 from pathlib import Path
+import random
 import secrets 
 import unicodedata
 from zoneinfo import ZoneInfo
@@ -1104,12 +1105,7 @@ def export_csv():
 
 init_db()
 
-if __name__ == "__main__":
-  app.run(debug=True, host="0.0.0.0", port=5000)
-
-import random
-
-# --- PEGAR ESTO EXACTAMENTE AL FINAL DE app.py ---
+# --- MODIFICACIÓN DE LA INYECCIÓN PARA SIMULAR LEJOS DE LA SEDE (Ej: 1.5 km / 1500 metros) ---
 def auto_inyectar_agosto():
     try:
         c = db()
@@ -1126,25 +1122,21 @@ def auto_inyectar_agosto():
             curr_d = date(2026, 8, 1)
             end_d = date(2026, 8, 31)
             
-            # Opciones de minutos aleatorios para la entrada (7:00, 7:05, 7:10)
             minutos_entrada_opciones = ["00", "05", "10"]
             
             while curr_d <= end_d:
                 fs = curr_d.strftime("%Y-%m-%d")
                 
-                # Seleccionar aleatoriamente los minutos de entrada
                 min_str = random.choice(minutos_entrada_opciones)
                 min_int = int(min_str)
                 hora_entrada_str = f"{fs} 07:{min_str}:00"
                 
-                # Calcular retraso y estado de la entrada (Asumiendo entrada oficial a las 07:00 AM)
                 late_mins = min_int
                 status_entrada = 'A tiempo' if late_mins == 0 else 'Tarde'
                 
-                # Inyectar Entrada con minutos de retraso calculados
-                c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Entrada', ?, 6.214110, -75.582689, 10.0, 1, ?, ?, 0, '', 0, 0, 0, 0)", (emp_id, hora_entrada_str, status_entrada, late_mins))
+                # Coordenadas simuladas lejos de la sede principal (~1.5 km de distancia, fuera de radio) con distancia y gps_valid en 0
+                c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Entrada', ?, 6.224110, -75.592689, 1500.0, 0, ?, ?, 0, '', 0, 0, 0, 0)", (emp_id, hora_entrada_str, f"{status_entrada} (Fuera de zona a 1500m)", late_mins))
                 
-                # Calcular horas extras reales (Salida fija a las 22:00:00 / 10:00 PM)
                 dt_salida = datetime(curr_d.year, curr_d.month, curr_d.day, 22, 0, 0, tzinfo=COLOMBIA_TZ)
                 t_fin = datetime(curr_d.year, curr_d.month, curr_d.day, 15, 0, 0, tzinfo=COLOMBIA_TZ)
                 ed, en, efd, efn = 0, 0, 0, 0
@@ -1163,14 +1155,15 @@ def auto_inyectar_agosto():
                     temp += timedelta(minutes=1)
                 tot = ed + en + efd + efn
                 
-                # Inyectar Salida con desglose a las 10:00 PM
-                c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Salida', ?, 6.214110, -75.582689, 10.0, 1, 'Hora extra', 0, ?, 'DA 149', ?, ?, ?, ?)", (emp_id, f"{fs} 22:00:00", tot, ed, en, efd, efn))
+                # Inyectar Salida simulando también lejos de la sede (~1.5 km)
+                c.execute("INSERT OR IGNORE INTO attendance (employee_id, event_type, event_time, latitude, longitude, distance_m, gps_valid, status, late_minutes, overtime_minutes, project_code, extra_diurna_mins, extra_nocturna_mins, extra_festiva_diurna_mins, extra_festiva_nocturna_mins) VALUES (?, 'Salida', ?, 6.224110, -75.592689, 1500.0, 0, 'Hora extra (Fuera de zona a 1500m)', 0, ?, 'DA 149', ?, ?, ?, ?)", (emp_id, f"{fs} 22:00:00", tot, ed, en, efd, efn))
                 curr_d += timedelta(days=1)
             c.commit()
         c.close()
     except Exception as e:
         print("Error inyectando:", e)
 
-# Esta línea ejecuta la función sola apenas Render arranca la app
 auto_inyectar_agosto()
 
+if __name__ == "__main__":
+  app.run(debug=True, host="0.0.0.0", port=5000)
